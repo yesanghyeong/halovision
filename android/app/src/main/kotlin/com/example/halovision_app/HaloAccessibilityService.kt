@@ -4,6 +4,9 @@ import android.accessibilityservice.AccessibilityService
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
+import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -16,84 +19,158 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.Locale
 import kotlin.math.abs
+
 
 class HaloAccessibilityService : AccessibilityService() {
 
     companion object {
+
         private const val TAG = "HALO_ACCESS"
 
-        // 보기 편하게 글자 크기
         private const val DEFAULT_TEXT_SIZE_SP = 32f
         private const val MIN_TEXT_SIZE_SP = 30f
         private const val MAX_TEXT_SIZE_SP = 72f
         private const val TEXT_SIZE_STEP_SP = 4f
     }
 
+
+    // =========================================================
+    // 기본 객체
+    // =========================================================
+
     private lateinit var windowManager: WindowManager
 
-    // 화면 가장자리 HALO 버튼
-    private var floatingButton: TextView? = null
-
-    // HALO 기능 메뉴
-    private var actionMenu: LinearLayout? = null
-
-    // 기능 결과 패널
-    private var resultPanel: LinearLayout? = null
-
-    // HALO를 누른 순간의 현재 화면 텍스트
-    private var currentScreenLines: List<String> = emptyList()
-
-    // 현재 보기 편하게 글자 크기
-    private var readableTextSizeSp: Float = DEFAULT_TEXT_SIZE_SP
+    private val mainHandler =
+        Handler(Looper.getMainLooper())
 
 
     // =========================================================
-    // AccessibilityService 시작
+    // TTS
+    // =========================================================
+
+    private var textToSpeech: TextToSpeech? = null
+
+    private var isTtsReady: Boolean = false
+
+
+    // =========================================================
+    // Overlay
+    // =========================================================
+
+    private var floatingButton: TextView? = null
+
+    private var actionMenu: LinearLayout? = null
+
+    private var resultPanel: LinearLayout? = null
+
+
+    // =========================================================
+    // 현재 화면 Context
+    // =========================================================
+
+    private var currentScreenLines: List<String> =
+        emptyList()
+
+
+    // =========================================================
+    // 현재 확대 글자 크기
+    // =========================================================
+
+    private var readableTextSizeSp: Float =
+        DEFAULT_TEXT_SIZE_SP
+
+
+    // =========================================================
+    // AccessibilityService 연결
     // =========================================================
 
     override fun onServiceConnected() {
+
         super.onServiceConnected()
 
-        Log.d(TAG, "Halo AccessibilityService 연결됨")
+        Log.d(
+            TAG,
+            "Halo AccessibilityService 연결됨"
+        )
 
         windowManager =
-            getSystemService(WINDOW_SERVICE) as WindowManager
+            getSystemService(
+                WINDOW_SERVICE
+            ) as WindowManager
+
+
+        initializeTextToSpeech()
 
         showFloatingHaloButton()
     }
 
 
     // =========================================================
-    // 화면이 바뀔 때 자동 분석하지 않음
-    //
-    // HALO 버튼을 눌렀을 때만 현재 화면을 읽음
+    // 화면 변화 자동 분석 안 함
     // =========================================================
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // 의도적으로 비워둠
+    override fun onAccessibilityEvent(
+        event: AccessibilityEvent?
+    ) {
+
+        // 사용자가 HALO를 눌렀을 때만
+        // 현재 화면 Node Tree를 읽음
     }
 
 
     override fun onInterrupt() {
-        Log.d(TAG, "Halo AccessibilityService 중단됨")
+
+        Log.d(
+            TAG,
+            "Halo AccessibilityService 중단됨"
+        )
     }
 
+
+    // =========================================================
+    // Service 종료
+    // =========================================================
 
     override fun onDestroy() {
 
         removeActionMenu()
+
         removeResultPanel()
+
 
         floatingButton?.let { button ->
 
             try {
-                windowManager.removeView(button)
+
+                windowManager.removeView(
+                    button
+                )
+
             } catch (_: Exception) {
             }
         }
 
-        floatingButton = null
+
+        floatingButton =
+            null
+
+
+        // TTS 정리
+        textToSpeech?.stop()
+
+        textToSpeech?.shutdown()
+
+        textToSpeech =
+            null
+
+        isTtsReady =
+            false
+
 
         super.onDestroy()
     }
@@ -109,63 +186,80 @@ class HaloAccessibilityService : AccessibilityService() {
             return
         }
 
-        val button = TextView(this).apply {
 
-            text = "HALO"
+        val button =
+            TextView(this).apply {
 
-            textSize = 13f
+                text =
+                    "HALO"
 
-            setTextColor(Color.WHITE)
+                textSize =
+                    13f
 
-            gravity = Gravity.CENTER
-
-            background = GradientDrawable().apply {
-
-                shape = GradientDrawable.OVAL
-
-                setColor(
-                    Color.rgb(
-                        20,
-                        80,
-                        190
-                    )
+                setTextColor(
+                    Color.WHITE
                 )
 
-                setStroke(
-                    dp(2),
-                    Color.rgb(
-                        100,
-                        190,
-                        255
-                    )
-                )
+                gravity =
+                    Gravity.CENTER
+
+
+                background =
+                    GradientDrawable().apply {
+
+                        shape =
+                            GradientDrawable.OVAL
+
+
+                        setColor(
+                            Color.rgb(
+                                20,
+                                80,
+                                190
+                            )
+                        )
+
+
+                        setStroke(
+                            dp(2),
+                            Color.rgb(
+                                100,
+                                190,
+                                255
+                            )
+                        )
+                    }
             }
-        }
 
 
-        val params = WindowManager.LayoutParams(
+        val params =
+            WindowManager.LayoutParams(
 
-            dp(64),
-            dp(64),
+                dp(64),
+                dp(64),
 
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams
+                    .TYPE_ACCESSIBILITY_OVERLAY,
 
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams
+                    .FLAG_NOT_FOCUSABLE,
 
-            PixelFormat.TRANSLUCENT
-        )
+                PixelFormat.TRANSLUCENT
+            )
 
 
         params.gravity =
             Gravity.TOP or Gravity.END
 
-        params.x = dp(16)
+        params.x =
+            dp(16)
 
-        params.y = dp(250)
+        params.y =
+            dp(250)
 
 
         // =====================================================
-        // 플로팅 버튼 이동 + 클릭
+        // 드래그 + 클릭
         // =====================================================
 
         var initialX = 0
@@ -183,13 +277,20 @@ class HaloAccessibilityService : AccessibilityService() {
 
                 MotionEvent.ACTION_DOWN -> {
 
-                    initialX = params.x
-                    initialY = params.y
+                    initialX =
+                        params.x
 
-                    initialTouchX = event.rawX
-                    initialTouchY = event.rawY
+                    initialY =
+                        params.y
 
-                    moved = false
+                    initialTouchX =
+                        event.rawX
+
+                    initialTouchY =
+                        event.rawY
+
+                    moved =
+                        false
 
                     true
                 }
@@ -198,21 +299,29 @@ class HaloAccessibilityService : AccessibilityService() {
                 MotionEvent.ACTION_MOVE -> {
 
                     val dx =
-                        (event.rawX - initialTouchX).toInt()
+                        (
+                            event.rawX -
+                                initialTouchX
+                            ).toInt()
+
 
                     val dy =
-                        (event.rawY - initialTouchY).toInt()
+                        (
+                            event.rawY -
+                                initialTouchY
+                            ).toInt()
 
 
                     if (
                         abs(dx) > 10 ||
                         abs(dy) > 10
                     ) {
-                        moved = true
+
+                        moved =
+                            true
                     }
 
 
-                    // Gravity.END 기준이므로 X 방향 반대
                     params.x =
                         initialX - dx
 
@@ -227,7 +336,9 @@ class HaloAccessibilityService : AccessibilityService() {
                             params
                         )
 
-                    } catch (e: Exception) {
+                    } catch (
+                        e: Exception
+                    ) {
 
                         Log.e(
                             TAG,
@@ -235,6 +346,7 @@ class HaloAccessibilityService : AccessibilityService() {
                             e
                         )
                     }
+
 
                     true
                 }
@@ -263,14 +375,18 @@ class HaloAccessibilityService : AccessibilityService() {
                 params
             )
 
-            floatingButton = button
+            floatingButton =
+                button
+
 
             Log.d(
                 TAG,
                 "HALO 플로팅 버튼 표시 완료"
             )
 
-        } catch (e: Exception) {
+        } catch (
+            e: Exception
+        ) {
 
             Log.e(
                 TAG,
@@ -282,20 +398,20 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
     // =========================================================
-    // HALO 버튼 클릭
+    // HALO 클릭
     // =========================================================
 
     private fun onHaloButtonClicked() {
 
-        Log.d(
-            TAG,
-            "HALO 버튼 클릭"
-        )
+        textToSpeech?.stop()
 
         removeActionMenu()
+
         removeResultPanel()
 
-        // 메뉴가 뜨기 전에 원래 앱 화면을 확보
+
+        // Overlay가 뜨기 전에
+        // 원래 앱의 화면을 먼저 읽음
         currentScreenLines =
             captureCurrentScreen()
 
@@ -306,15 +422,6 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
 
-        currentScreenLines.forEach { line ->
-
-            Log.d(
-                TAG,
-                line
-            )
-        }
-
-
         showActionMenu()
     }
 
@@ -323,7 +430,8 @@ class HaloAccessibilityService : AccessibilityService() {
     // 현재 화면 Node Tree 읽기
     // =========================================================
 
-    private fun captureCurrentScreen(): List<String> {
+    private fun captureCurrentScreen():
+        List<String> {
 
         val rootNode =
             rootInActiveWindow
@@ -342,9 +450,11 @@ class HaloAccessibilityService : AccessibilityService() {
 
         return screenTexts
             .map { value ->
+
                 value.trim()
             }
             .filter { value ->
+
                 value.isNotEmpty()
             }
             .distinct()
@@ -352,7 +462,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
     // =========================================================
-    // Accessibility Node Tree 재귀 탐색
+    // Node Tree 텍스트 수집
     // =========================================================
 
     private fun collectTexts(
@@ -371,7 +481,9 @@ class HaloAccessibilityService : AccessibilityService() {
                 ?.trim()
 
 
-        if (!nodeText.isNullOrEmpty()) {
+        if (
+            !nodeText.isNullOrEmpty()
+        ) {
 
             result.add(
                 nodeText
@@ -385,7 +497,9 @@ class HaloAccessibilityService : AccessibilityService() {
                 ?.trim()
 
 
-        if (!nodeDescription.isNullOrEmpty()) {
+        if (
+            !nodeDescription.isNullOrEmpty()
+        ) {
 
             result.add(
                 nodeDescription
@@ -394,24 +508,32 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
         for (
-            index in 0 until node.childCount
+            index in
+            0 until node.childCount
         ) {
 
             collectTexts(
-                node = node.getChild(index),
-                result = result
+
+                node =
+                    node.getChild(
+                        index
+                    ),
+
+                result =
+                    result
             )
         }
     }
 
 
     // =========================================================
-    // HALO 기능 선택 메뉴
+    // HALO 메뉴
     // =========================================================
 
     private fun showActionMenu() {
 
         removeActionMenu()
+
         removeResultPanel()
 
 
@@ -421,6 +543,7 @@ class HaloAccessibilityService : AccessibilityService() {
                 orientation =
                     LinearLayout.VERTICAL
 
+
                 setPadding(
                     dp(20),
                     dp(20),
@@ -428,27 +551,32 @@ class HaloAccessibilityService : AccessibilityService() {
                     dp(20)
                 )
 
+
                 background =
                     createRoundedBackground(
+
                         backgroundColor =
                             Color.rgb(
                                 18,
                                 18,
                                 18
                             ),
+
                         borderColor =
                             Color.rgb(
                                 75,
                                 155,
                                 255
                             ),
-                        radiusDp = 24
+
+                        radiusDp =
+                            24
                     )
             }
 
 
         // =====================================================
-        // 제목
+        // HALO 제목
         // =====================================================
 
         val title =
@@ -471,6 +599,7 @@ class HaloAccessibilityService : AccessibilityService() {
                 gravity =
                     Gravity.CENTER
 
+
                 setPadding(
                     0,
                     dp(4),
@@ -486,7 +615,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
         // =====================================================
-        // 안내
+        // 설명
         // =====================================================
 
         val description =
@@ -505,6 +634,7 @@ class HaloAccessibilityService : AccessibilityService() {
                 gravity =
                     Gravity.CENTER
 
+
                 setPadding(
                     0,
                     0,
@@ -519,11 +649,18 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
 
+        // =====================================================
+        // 화면 Context 상태
+        // =====================================================
+
         val contextStatus =
             TextView(this).apply {
 
                 text =
-                    if (currentScreenLines.isEmpty()) {
+                    if (
+                        currentScreenLines
+                            .isEmpty()
+                    ) {
 
                         "현재 화면에서 읽을 수 있는 정보를 찾지 못했습니다."
 
@@ -532,15 +669,19 @@ class HaloAccessibilityService : AccessibilityService() {
                         "현재 화면 정보를 불러왔습니다."
                     }
 
+
                 textSize =
                     14f
+
 
                 setTextColor(
                     Color.LTGRAY
                 )
 
+
                 gravity =
                     Gravity.CENTER
+
 
                 setPadding(
                     0,
@@ -562,33 +703,49 @@ class HaloAccessibilityService : AccessibilityService() {
 
         val readableButton =
             createActionButton(
-                title = "🔍  보기 편하게",
-                subtitle = "큰 글자와 확대 기능으로 확인"
+
+                buttonTitle =
+                    "🔍  보기 편하게",
+
+                buttonSubtitle =
+                    "큰 글자와 확대 기능으로 확인"
             )
 
 
-        readableButton.setOnClickListener {
+        readableButton
+            .setOnClickListener {
 
-            removeActionMenu()
+                removeActionMenu()
 
-            if (currentScreenLines.isEmpty()) {
 
-                showMessagePanel(
-                    panelTitle = "보기 편하게",
-                    message =
-                        "현재 화면에서 읽을 수 있는 텍스트가 없습니다."
+                if (
+                    currentScreenLines
+                        .isEmpty()
+                ) {
+
+                    showMessagePanel(
+
+                        panelTitle =
+                            "보기 편하게",
+
+                        message =
+                            "현재 화면에서 읽을 수 있는 텍스트가 없습니다."
+                    )
+
+
+                    return@setOnClickListener
+                }
+
+
+                showReadablePanel(
+
+                    currentScreenLines
+                        .joinToString(
+                            separator =
+                                "\n\n"
+                        )
                 )
-
-                return@setOnClickListener
             }
-
-
-            showReadablePanel(
-                currentScreenLines.joinToString(
-                    separator = "\n\n"
-                )
-            )
-        }
 
 
         panel.addView(
@@ -602,23 +759,22 @@ class HaloAccessibilityService : AccessibilityService() {
 
         val importantButton =
             createActionButton(
-                title = "★  중요한 내용만",
-                subtitle = "필요한 핵심 정보만 간단하게"
+
+                buttonTitle =
+                    "★  중요한 내용만",
+
+                buttonSubtitle =
+                    "AI가 필요한 핵심 정보만 정리"
             )
 
 
-        importantButton.setOnClickListener {
+        importantButton
+            .setOnClickListener {
 
-            removeActionMenu()
+                removeActionMenu()
 
-            showMessagePanel(
-                panelTitle = "중요한 내용만",
-                message =
-                    "현재 화면 정보는 정상적으로 확보했습니다.\n\n" +
-                    "다음 단계에서 FastAPI와 연결하여 " +
-                    "AI가 핵심 정보만 추출하도록 구현합니다."
-            )
-        }
+                requestImportantScreen()
+            }
 
 
         panel.addView(
@@ -632,23 +788,22 @@ class HaloAccessibilityService : AccessibilityService() {
 
         val readButton =
             createActionButton(
-                title = "🔊  읽어줘",
-                subtitle = "현재 화면 내용을 음성으로 확인"
+
+                buttonTitle =
+                    "🔊  읽어줘",
+
+                buttonSubtitle =
+                    "현재 화면 내용을 음성으로 확인"
             )
 
 
-        readButton.setOnClickListener {
+        readButton
+            .setOnClickListener {
 
-            removeActionMenu()
+                removeActionMenu()
 
-            showMessagePanel(
-                panelTitle = "읽어줘",
-                message =
-                    "현재 화면 정보는 확보되어 있습니다.\n\n" +
-                    "다음 단계에서 TTS를 연결해 " +
-                    "음성으로 읽도록 구현합니다."
-            )
-        }
+                startReadingCurrentScreen()
+            }
 
 
         panel.addView(
@@ -662,22 +817,31 @@ class HaloAccessibilityService : AccessibilityService() {
 
         val questionButton =
             createActionButton(
-                title = "💬  질문하기",
-                subtitle = "현재 화면에 대해 이어서 질문"
+
+                buttonTitle =
+                    "💬  질문하기",
+
+                buttonSubtitle =
+                    "현재 화면에 대해 이어서 질문"
             )
 
 
-        questionButton.setOnClickListener {
+        questionButton
+            .setOnClickListener {
 
-            removeActionMenu()
+                removeActionMenu()
 
-            showMessagePanel(
-                panelTitle = "질문하기",
-                message =
-                    "현재 화면 Context는 저장되어 있습니다.\n\n" +
-                    "이후 ScreenSession 기반 연속 질문 기능을 연결합니다."
-            )
-        }
+
+                showMessagePanel(
+
+                    panelTitle =
+                        "질문하기",
+
+                    message =
+                        "현재 화면 Context는 저장되어 있습니다.\n\n" +
+                            "이후 ScreenSession 기반 질문 기능을 연결합니다."
+                )
+            }
 
 
         panel.addView(
@@ -698,9 +862,6 @@ class HaloAccessibilityService : AccessibilityService() {
                 textSize =
                     17f
 
-                setTextColor(
-                    Color.BLACK
-                )
 
                 setOnClickListener {
 
@@ -711,7 +872,9 @@ class HaloAccessibilityService : AccessibilityService() {
 
         val closeParams =
             LinearLayout.LayoutParams(
+
                 LinearLayout.LayoutParams.MATCH_PARENT,
+
                 dp(52)
             )
 
@@ -726,15 +889,23 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
 
+        // =====================================================
+        // Overlay
+        // =====================================================
+
         val params =
             WindowManager.LayoutParams(
 
                 dp(340),
-                WindowManager.LayoutParams.WRAP_CONTENT,
 
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams
+                    .WRAP_CONTENT,
 
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams
+                    .TYPE_ACCESSIBILITY_OVERLAY,
+
+                WindowManager.LayoutParams
+                    .FLAG_NOT_FOCUSABLE,
 
                 PixelFormat.TRANSLUCENT
             )
@@ -751,10 +922,13 @@ class HaloAccessibilityService : AccessibilityService() {
                 params
             )
 
+
             actionMenu =
                 panel
 
-        } catch (e: Exception) {
+        } catch (
+            e: Exception
+        ) {
 
             Log.e(
                 TAG,
@@ -766,12 +940,12 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
     // =========================================================
-    // 기능 버튼 생성
+    // HALO 메뉴 버튼 생성
     // =========================================================
 
     private fun createActionButton(
-        title: String,
-        subtitle: String
+        buttonTitle: String,
+        buttonSubtitle: String
     ): LinearLayout {
 
         val container =
@@ -780,6 +954,7 @@ class HaloAccessibilityService : AccessibilityService() {
                 orientation =
                     LinearLayout.VERTICAL
 
+
                 setPadding(
                     dp(16),
                     dp(12),
@@ -787,22 +962,28 @@ class HaloAccessibilityService : AccessibilityService() {
                     dp(12)
                 )
 
+
                 background =
                     createRoundedBackground(
+
                         backgroundColor =
                             Color.rgb(
                                 38,
                                 38,
                                 38
                             ),
+
                         borderColor =
                             Color.rgb(
                                 70,
                                 70,
                                 70
                             ),
-                        radiusDp = 16
+
+                        radiusDp =
+                            16
                     )
+
 
                 isClickable =
                     true
@@ -816,7 +997,7 @@ class HaloAccessibilityService : AccessibilityService() {
             TextView(this).apply {
 
                 text =
-                    title
+                    buttonTitle
 
                 textSize =
                     18f
@@ -831,7 +1012,7 @@ class HaloAccessibilityService : AccessibilityService() {
             TextView(this).apply {
 
                 text =
-                    subtitle
+                    buttonSubtitle
 
                 textSize =
                     13f
@@ -839,6 +1020,7 @@ class HaloAccessibilityService : AccessibilityService() {
                 setTextColor(
                     Color.LTGRAY
                 )
+
 
                 setPadding(
                     0,
@@ -861,8 +1043,12 @@ class HaloAccessibilityService : AccessibilityService() {
 
         val params =
             LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
+
+                LinearLayout.LayoutParams
+                    .MATCH_PARENT,
+
+                LinearLayout.LayoutParams
+                    .WRAP_CONTENT
             )
 
 
@@ -880,12 +1066,6 @@ class HaloAccessibilityService : AccessibilityService() {
 
     // =========================================================
     // 보기 편하게
-    //
-    // 기본 32sp
-    // 최소 30sp
-    // 최대 72sp
-    // A-/A+
-    // 핀치 확대/축소
     // =========================================================
 
     private fun showReadablePanel(
@@ -901,6 +1081,7 @@ class HaloAccessibilityService : AccessibilityService() {
                 orientation =
                     LinearLayout.VERTICAL
 
+
                 setPadding(
                     dp(18),
                     dp(18),
@@ -908,27 +1089,32 @@ class HaloAccessibilityService : AccessibilityService() {
                     dp(18)
                 )
 
+
                 background =
                     createRoundedBackground(
+
                         backgroundColor =
                             Color.rgb(
                                 12,
                                 12,
                                 12
                             ),
+
                         borderColor =
                             Color.rgb(
                                 75,
                                 155,
                                 255
                             ),
-                        radiusDp = 24
+
+                        radiusDp =
+                            24
                     )
             }
 
 
         // =====================================================
-        // 상단 제목 + 현재 글자 크기
+        // 제목 + 글자 크기
         // =====================================================
 
         val headerRow =
@@ -962,7 +1148,9 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
         headerRow.addView(
+
             title,
+
             LinearLayout.LayoutParams(
                 0,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -987,6 +1175,7 @@ class HaloAccessibilityService : AccessibilityService() {
                 gravity =
                     Gravity.CENTER
 
+
                 setPadding(
                     dp(10),
                     dp(6),
@@ -994,21 +1183,26 @@ class HaloAccessibilityService : AccessibilityService() {
                     dp(6)
                 )
 
+
                 background =
                     createRoundedBackground(
+
                         backgroundColor =
                             Color.rgb(
                                 40,
                                 40,
                                 40
                             ),
+
                         borderColor =
                             Color.rgb(
                                 80,
                                 80,
                                 80
                             ),
-                        radiusDp = 12
+
+                        radiusDp =
+                            12
                     )
             }
 
@@ -1040,6 +1234,7 @@ class HaloAccessibilityService : AccessibilityService() {
                     Color.LTGRAY
                 )
 
+
                 setPadding(
                     0,
                     dp(10),
@@ -1055,7 +1250,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
         // =====================================================
-        // A- / A+ 버튼
+        // A- / A+
         // =====================================================
 
         val zoomButtonRow =
@@ -1133,7 +1328,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
         // =====================================================
-        // 텍스트 영역
+        // 텍스트
         // =====================================================
 
         val scrollView =
@@ -1146,19 +1341,23 @@ class HaloAccessibilityService : AccessibilityService() {
                 text =
                     screenText
 
+
                 setTextSize(
                     TypedValue.COMPLEX_UNIT_SP,
                     readableTextSizeSp
                 )
 
+
                 setTextColor(
                     Color.WHITE
                 )
+
 
                 setLineSpacing(
                     dp(10).toFloat(),
                     1.25f
                 )
+
 
                 setPadding(
                     dp(2),
@@ -1175,17 +1374,22 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
         panel.addView(
+
             scrollView,
+
             LinearLayout.LayoutParams(
+
                 LinearLayout.LayoutParams.MATCH_PARENT,
+
                 0,
+
                 1f
             )
         )
 
 
         // =====================================================
-        // 글자 크기 변경 함수
+        // 글자 크기 변경
         // =====================================================
 
         fun updateTextSize(
@@ -1194,80 +1398,76 @@ class HaloAccessibilityService : AccessibilityService() {
 
             readableTextSizeSp =
                 newSize.coerceIn(
+
                     MIN_TEXT_SIZE_SP,
+
                     MAX_TEXT_SIZE_SP
                 )
 
 
             content.setTextSize(
+
                 TypedValue.COMPLEX_UNIT_SP,
+
                 readableTextSizeSp
             )
 
 
             sizeLabel.text =
                 "${readableTextSizeSp.toInt()}sp"
-
-
-            Log.d(
-                TAG,
-                "보기 편하게 글자 크기: $readableTextSizeSp sp"
-            )
         }
 
 
-        // =====================================================
-        // A- 버튼
-        // =====================================================
+        decreaseButton
+            .setOnClickListener {
 
-        decreaseButton.setOnClickListener {
+                updateTextSize(
 
-            updateTextSize(
-                readableTextSizeSp -
-                    TEXT_SIZE_STEP_SP
-            )
-        }
+                    readableTextSizeSp -
+                        TEXT_SIZE_STEP_SP
+                )
+            }
 
 
-        // =====================================================
-        // A+ 버튼
-        // =====================================================
+        increaseButton
+            .setOnClickListener {
 
-        increaseButton.setOnClickListener {
+                updateTextSize(
 
-            updateTextSize(
-                readableTextSizeSp +
-                    TEXT_SIZE_STEP_SP
-            )
-        }
+                    readableTextSizeSp +
+                        TEXT_SIZE_STEP_SP
+                )
+            }
 
 
         // =====================================================
-        // 핀치 확대 / 축소
+        // 핀치 줌
         // =====================================================
 
         val scaleGestureDetector =
             ScaleGestureDetector(
+
                 this,
+
                 object :
-                    ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                    ScaleGestureDetector
+                        .SimpleOnScaleGestureListener() {
 
                     override fun onScale(
-                        detector: ScaleGestureDetector
+                        detector:
+                            ScaleGestureDetector
                     ): Boolean {
 
-                        val scaleFactor =
-                            detector.scaleFactor
-
-
                         val newSize =
+
                             readableTextSizeSp *
-                                scaleFactor
+                                detector.scaleFactor
 
 
                         updateTextSize(
                             newSize
                         )
+
 
                         return true
                     }
@@ -1275,21 +1475,23 @@ class HaloAccessibilityService : AccessibilityService() {
             )
 
 
-        scrollView.setOnTouchListener { _, event ->
+        scrollView
+            .setOnTouchListener { _, event ->
 
-            scaleGestureDetector.onTouchEvent(
-                event
-            )
+                scaleGestureDetector
+                    .onTouchEvent(
+                        event
+                    )
 
-            // 두 손가락일 때만 확대 제스처가 터치를 사용
-            // 한 손가락일 때는 ScrollView 스크롤 유지
-            event.pointerCount >= 2 ||
-                scaleGestureDetector.isInProgress
-        }
+
+                event.pointerCount >= 2 ||
+                    scaleGestureDetector
+                        .isInProgress
+            }
 
 
         // =====================================================
-        // 메뉴로 돌아가기
+        // 돌아가기
         // =====================================================
 
         val backButton =
@@ -1300,6 +1502,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
                 textSize =
                     17f
+
 
                 setOnClickListener {
 
@@ -1312,7 +1515,9 @@ class HaloAccessibilityService : AccessibilityService() {
 
         val backParams =
             LinearLayout.LayoutParams(
+
                 LinearLayout.LayoutParams.MATCH_PARENT,
+
                 dp(56)
             )
 
@@ -1335,11 +1540,14 @@ class HaloAccessibilityService : AccessibilityService() {
             WindowManager.LayoutParams(
 
                 dp(370),
+
                 dp(650),
 
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams
+                    .TYPE_ACCESSIBILITY_OVERLAY,
 
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams
+                    .FLAG_NOT_FOCUSABLE,
 
                 PixelFormat.TRANSLUCENT
             )
@@ -1359,7 +1567,9 @@ class HaloAccessibilityService : AccessibilityService() {
             resultPanel =
                 panel
 
-        } catch (e: Exception) {
+        } catch (
+            e: Exception
+        ) {
 
             Log.e(
                 TAG,
@@ -1371,7 +1581,1458 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
     // =========================================================
-    // 안내용 패널
+    // 중요한 내용만 → FastAPI → GPT
+    // =========================================================
+
+    private fun requestImportantScreen() {
+
+        if (
+            currentScreenLines.isEmpty()
+        ) {
+
+            showMessagePanel(
+
+                panelTitle =
+                    "중요한 내용만",
+
+                message =
+                    "현재 화면에서 읽을 수 있는 정보가 없습니다."
+            )
+
+            return
+        }
+
+
+        val screenText =
+
+            currentScreenLines
+                .joinToString(
+                    separator =
+                        "\n"
+                )
+
+
+        // 로딩 화면
+        showMessagePanel(
+
+            panelTitle =
+                "중요한 내용만",
+
+            message =
+                "현재 화면의 중요한 정보를 분석하고 있습니다..."
+        )
+
+
+        Thread {
+
+            var connection:
+                HttpURLConnection? = null
+
+
+            try {
+
+                // adb reverse 사용 중
+                val url =
+                    URL(
+                        "http://127.0.0.1:8000/screen/important"
+                    )
+
+
+                connection =
+                    url.openConnection()
+                        as HttpURLConnection
+
+
+                connection.requestMethod =
+                    "POST"
+
+
+                connection.connectTimeout =
+                    10000
+
+
+                connection.readTimeout =
+                    30000
+
+
+                connection.doOutput =
+                    true
+
+
+                connection.setRequestProperty(
+
+                    "Content-Type",
+
+                    "application/json; charset=UTF-8"
+                )
+
+
+                val requestJson =
+                    JSONObject().apply {
+
+                        put(
+                            "screen_text",
+                            screenText
+                        )
+                    }
+
+
+                val requestBytes =
+                    requestJson
+                        .toString()
+                        .toByteArray(
+                            Charsets.UTF_8
+                        )
+
+
+                connection.outputStream
+                    .use { outputStream ->
+
+                        outputStream.write(
+                            requestBytes
+                        )
+
+                        outputStream.flush()
+                    }
+
+
+                val responseCode =
+                    connection.responseCode
+
+
+                val responseStream =
+
+                    if (
+                        responseCode in 200..299
+                    ) {
+
+                        connection.inputStream
+
+                    } else {
+
+                        connection.errorStream
+                    }
+
+
+                val responseText =
+                    responseStream
+                        ?.bufferedReader(
+                            Charsets.UTF_8
+                        )
+                        ?.use { reader ->
+
+                            reader.readText()
+                        }
+                        ?: ""
+
+
+                Log.d(
+                    TAG,
+                    "FastAPI 응답 코드: $responseCode"
+                )
+
+
+                Log.d(
+                    TAG,
+                    "FastAPI 응답: $responseText"
+                )
+
+
+                if (
+                    responseCode in 200..299
+                ) {
+
+                    val responseJson =
+                        JSONObject(
+                            responseText
+                        )
+
+
+                    val answer =
+                        responseJson.optString(
+
+                            "answer",
+
+                            "서버 응답을 읽을 수 없습니다."
+                        )
+
+
+                    mainHandler.post {
+
+                        showImportantResultPanel(
+                            answer
+                        )
+                    }
+
+                } else {
+
+                    mainHandler.post {
+
+                        showMessagePanel(
+
+                            panelTitle =
+                                "중요한 내용만",
+
+                            message =
+                                "서버 오류가 발생했습니다.\n\n" +
+                                    "응답 코드: $responseCode"
+                        )
+                    }
+                }
+
+
+            } catch (
+                e: Exception
+            ) {
+
+                Log.e(
+                    TAG,
+                    "FastAPI 연결 실패",
+                    e
+                )
+
+
+                mainHandler.post {
+
+                    showMessagePanel(
+
+                        panelTitle =
+                            "중요한 내용만",
+
+                        message =
+                            "서버에 연결할 수 없습니다.\n\n" +
+                                "FastAPI 서버와 adb reverse 상태를 확인해주세요."
+                    )
+                }
+
+            } finally {
+
+                connection
+                    ?.disconnect()
+            }
+
+        }.start()
+    }
+
+
+    // =========================================================
+    // 중요한 내용만 - AI 결과 확대 화면
+    // =========================================================
+
+    private fun showImportantResultPanel(
+        answer: String
+    ) {
+
+        removeResultPanel()
+
+
+        val panel =
+            LinearLayout(this).apply {
+
+                orientation =
+                    LinearLayout.VERTICAL
+
+
+                setPadding(
+                    dp(18),
+                    dp(18),
+                    dp(18),
+                    dp(18)
+                )
+
+
+                background =
+                    createRoundedBackground(
+
+                        backgroundColor =
+                            Color.rgb(
+                                12,
+                                12,
+                                12
+                            ),
+
+                        borderColor =
+                            Color.rgb(
+                                75,
+                                155,
+                                255
+                            ),
+
+                        radiusDp =
+                            24
+                    )
+            }
+
+
+        // =====================================================
+        // 제목 + 크기
+        // =====================================================
+
+        val headerRow =
+            LinearLayout(this).apply {
+
+                orientation =
+                    LinearLayout.HORIZONTAL
+
+                gravity =
+                    Gravity.CENTER_VERTICAL
+            }
+
+
+        val titleView =
+            TextView(this).apply {
+
+                text =
+                    "중요한 내용만"
+
+                textSize =
+                    23f
+
+                setTextColor(
+                    Color.rgb(
+                        100,
+                        190,
+                        255
+                    )
+                )
+            }
+
+
+        headerRow.addView(
+
+            titleView,
+
+            LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        )
+
+
+        val sizeLabel =
+            TextView(this).apply {
+
+                text =
+                    "${readableTextSizeSp.toInt()}sp"
+
+                textSize =
+                    16f
+
+                setTextColor(
+                    Color.WHITE
+                )
+
+                gravity =
+                    Gravity.CENTER
+
+
+                setPadding(
+                    dp(10),
+                    dp(6),
+                    dp(10),
+                    dp(6)
+                )
+
+
+                background =
+                    createRoundedBackground(
+
+                        backgroundColor =
+                            Color.rgb(
+                                40,
+                                40,
+                                40
+                            ),
+
+                        borderColor =
+                            Color.rgb(
+                                80,
+                                80,
+                                80
+                            ),
+
+                        radiusDp =
+                            12
+                    )
+            }
+
+
+        headerRow.addView(
+            sizeLabel
+        )
+
+
+        panel.addView(
+            headerRow
+        )
+
+
+        // =====================================================
+        // 설명
+        // =====================================================
+
+        val guideText =
+            TextView(this).apply {
+
+                text =
+                    "AI가 현재 화면에서 핵심 정보만 정리했습니다."
+
+                textSize =
+                    16f
+
+                setTextColor(
+                    Color.LTGRAY
+                )
+
+
+                setPadding(
+                    0,
+                    dp(10),
+                    0,
+                    dp(10)
+                )
+            }
+
+
+        panel.addView(
+            guideText
+        )
+
+
+        // =====================================================
+        // A- / A+
+        // =====================================================
+
+        val zoomButtonRow =
+            LinearLayout(this).apply {
+
+                orientation =
+                    LinearLayout.HORIZONTAL
+
+                gravity =
+                    Gravity.CENTER
+            }
+
+
+        val decreaseButton =
+            Button(this).apply {
+
+                text =
+                    "A−"
+
+                textSize =
+                    20f
+            }
+
+
+        val increaseButton =
+            Button(this).apply {
+
+                text =
+                    "A+"
+
+                textSize =
+                    20f
+            }
+
+
+        val decreaseParams =
+            LinearLayout.LayoutParams(
+                0,
+                dp(58),
+                1f
+            )
+
+
+        decreaseParams.marginEnd =
+            dp(6)
+
+
+        val increaseParams =
+            LinearLayout.LayoutParams(
+                0,
+                dp(58),
+                1f
+            )
+
+
+        increaseParams.marginStart =
+            dp(6)
+
+
+        zoomButtonRow.addView(
+            decreaseButton,
+            decreaseParams
+        )
+
+
+        zoomButtonRow.addView(
+            increaseButton,
+            increaseParams
+        )
+
+
+        panel.addView(
+            zoomButtonRow
+        )
+
+
+        // =====================================================
+        // AI 결과
+        // =====================================================
+
+        val scrollView =
+            ScrollView(this)
+
+
+        val content =
+            TextView(this).apply {
+
+                text =
+                    answer
+
+
+                setTextSize(
+                    TypedValue.COMPLEX_UNIT_SP,
+                    readableTextSizeSp
+                )
+
+
+                setTextColor(
+                    Color.WHITE
+                )
+
+
+                setLineSpacing(
+                    dp(10).toFloat(),
+                    1.3f
+                )
+
+
+                setPadding(
+                    dp(2),
+                    dp(18),
+                    dp(2),
+                    dp(20)
+                )
+            }
+
+
+        scrollView.addView(
+            content
+        )
+
+
+        panel.addView(
+
+            scrollView,
+
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        )
+
+
+        // =====================================================
+        // 글자 크기 변경
+        // =====================================================
+
+        fun updateTextSize(
+            newSize: Float
+        ) {
+
+            readableTextSizeSp =
+                newSize.coerceIn(
+                    MIN_TEXT_SIZE_SP,
+                    MAX_TEXT_SIZE_SP
+                )
+
+
+            content.setTextSize(
+                TypedValue.COMPLEX_UNIT_SP,
+                readableTextSizeSp
+            )
+
+
+            sizeLabel.text =
+                "${readableTextSizeSp.toInt()}sp"
+        }
+
+
+        decreaseButton
+            .setOnClickListener {
+
+                updateTextSize(
+
+                    readableTextSizeSp -
+                        TEXT_SIZE_STEP_SP
+                )
+            }
+
+
+        increaseButton
+            .setOnClickListener {
+
+                updateTextSize(
+
+                    readableTextSizeSp +
+                        TEXT_SIZE_STEP_SP
+                )
+            }
+
+
+        // =====================================================
+        // 핀치 확대
+        // =====================================================
+
+        val scaleGestureDetector =
+            ScaleGestureDetector(
+
+                this,
+
+                object :
+                    ScaleGestureDetector
+                        .SimpleOnScaleGestureListener() {
+
+                    override fun onScale(
+                        detector:
+                            ScaleGestureDetector
+                    ): Boolean {
+
+                        val newSize =
+                            readableTextSizeSp *
+                                detector.scaleFactor
+
+
+                        updateTextSize(
+                            newSize
+                        )
+
+
+                        return true
+                    }
+                }
+            )
+
+
+        scrollView
+            .setOnTouchListener { _, event ->
+
+                scaleGestureDetector
+                    .onTouchEvent(
+                        event
+                    )
+
+
+                event.pointerCount >= 2 ||
+                    scaleGestureDetector
+                        .isInProgress
+            }
+        
+
+
+        // =====================================================
+    // AI 핵심 내용 읽어주기
+    // =====================================================
+
+    val readImportantButton =
+        Button(this).apply {
+
+            text =
+                "🔊 핵심 내용 읽어주기"
+
+            textSize =
+                18f
+
+
+            setOnClickListener {
+
+                if (!isTtsReady) {
+
+                    showMessagePanel(
+
+                        panelTitle =
+                            "음성 읽기",
+
+                        message =
+                            "음성 읽기 기능을 준비하지 못했습니다.\n\n" +
+                                "휴대폰의 TTS 설정을 확인해주세요."
+                    )
+
+                    return@setOnClickListener
+                }
+
+
+                removeResultPanel()
+
+
+                showTtsControlPanel(
+
+                    textToRead =
+                        answer,
+
+                    statusMessage =
+                        "AI가 정리한 핵심 내용을 읽고 있습니다."
+                )
+
+
+                speakText(
+                    answer
+                )
+            }
+        }
+
+
+    val readImportantParams =
+        LinearLayout.LayoutParams(
+
+            LinearLayout.LayoutParams.MATCH_PARENT,
+
+            dp(58)
+        )
+
+
+    readImportantParams.bottomMargin =
+        dp(10)
+
+
+    panel.addView(
+        readImportantButton,
+        readImportantParams
+    )
+
+
+        // =====================================================
+        // 돌아가기
+        // =====================================================
+
+        val backButton =
+            Button(this).apply {
+
+                text =
+                    "HALO 메뉴로 돌아가기"
+
+                textSize =
+                    17f
+
+
+                setOnClickListener {
+
+                    removeResultPanel()
+
+                    showActionMenu()
+                }
+            }
+
+
+        val backParams =
+            LinearLayout.LayoutParams(
+
+                LinearLayout.LayoutParams.MATCH_PARENT,
+
+                dp(56)
+            )
+
+
+        backParams.topMargin =
+            dp(10)
+
+
+        panel.addView(
+            backButton,
+            backParams
+        )
+
+
+        // =====================================================
+        // Overlay
+        // =====================================================
+
+        val params =
+            WindowManager.LayoutParams(
+
+                dp(370),
+
+                dp(650),
+
+                WindowManager.LayoutParams
+                    .TYPE_ACCESSIBILITY_OVERLAY,
+
+                WindowManager.LayoutParams
+                    .FLAG_NOT_FOCUSABLE,
+
+                PixelFormat.TRANSLUCENT
+            )
+
+
+        params.gravity =
+            Gravity.CENTER
+
+
+        try {
+
+            windowManager.addView(
+                panel,
+                params
+            )
+
+            resultPanel =
+                panel
+
+        } catch (
+            e: Exception
+        ) {
+
+            Log.e(
+                TAG,
+                "AI 결과 패널 표시 실패",
+                e
+            )
+        }
+    }
+
+
+    // =========================================================
+    // Android TTS 초기화
+    // =========================================================
+
+    private fun initializeTextToSpeech() {
+
+        if (textToSpeech != null) {
+            return
+        }
+
+
+        textToSpeech =
+            TextToSpeech(this) { status ->
+
+                if (
+                    status ==
+                    TextToSpeech.SUCCESS
+                ) {
+
+                    val languageResult =
+                        textToSpeech?.setLanguage(
+                            Locale.KOREAN
+                        )
+
+
+                    isTtsReady =
+                        languageResult !=
+                            TextToSpeech.LANG_MISSING_DATA &&
+                            languageResult !=
+                            TextToSpeech.LANG_NOT_SUPPORTED
+
+
+                    if (
+                        isTtsReady
+                    ) {
+
+                        textToSpeech
+                            ?.setSpeechRate(
+                                0.9f
+                            )
+
+
+                        textToSpeech
+                            ?.setPitch(
+                                1.0f
+                            )
+
+
+                        Log.d(
+                            TAG,
+                            "HALO TTS 초기화 성공"
+                        )
+
+                    } else {
+
+                        Log.e(
+                            TAG,
+                            "한국어 TTS를 사용할 수 없음"
+                        )
+                    }
+
+                } else {
+
+                    isTtsReady =
+                        false
+
+
+                    Log.e(
+                        TAG,
+                        "HALO TTS 초기화 실패"
+                    )
+                }
+            }
+    }
+
+
+    // =========================================================
+    // 현재 화면 읽어주기
+    // =========================================================
+
+    private fun startReadingCurrentScreen() {
+
+        if (
+            currentScreenLines.isEmpty()
+        ) {
+
+            showMessagePanel(
+
+                panelTitle =
+                    "읽어줘",
+
+                message =
+                    "현재 화면에서 읽을 수 있는 정보가 없습니다."
+            )
+
+            return
+        }
+
+
+        if (
+            !isTtsReady
+        ) {
+
+            showMessagePanel(
+
+                panelTitle =
+                    "읽어줘",
+
+                message =
+                    "음성 읽기 기능을 준비하지 못했습니다.\n\n" +
+                        "휴대폰의 TTS 설정을 확인해주세요."
+            )
+
+            return
+        }
+
+
+        val screenText =
+            currentScreenLines
+                .joinToString(
+                    separator =
+                        ".\n"
+                )
+
+
+        showTtsControlPanel( 
+            textToRead = screenText,
+            statusMessage = "현재 화면의 내용을 읽고 있습니다."
+        )   
+
+
+        speakText(
+            screenText
+        )
+    }
+
+
+    // =========================================================
+    // 실제 TTS 출력
+    // =========================================================
+
+    private fun speakText(
+        text: String
+    ) {
+
+        if (
+            !isTtsReady
+        ) {
+            return
+        }
+
+
+        textToSpeech
+            ?.stop()
+
+
+        val chunks =
+            splitTextForTts(
+                text
+            )
+
+
+        chunks
+            .forEachIndexed { index, chunk ->
+
+                val queueMode =
+
+                    if (
+                        index == 0
+                    ) {
+
+                        TextToSpeech.QUEUE_FLUSH
+
+                    } else {
+
+                        TextToSpeech.QUEUE_ADD
+                    }
+
+
+                textToSpeech
+                    ?.speak(
+
+                        chunk,
+
+                        queueMode,
+
+                        null,
+
+                        "halo_tts_$index"
+                    )
+            }
+    }
+
+
+    // =========================================================
+    // 긴 TTS 텍스트 분할
+    // =========================================================
+
+    private fun splitTextForTts(
+        text: String
+    ): List<String> {
+
+        val maxLength =
+            3000
+
+
+        var remaining =
+            text.trim()
+
+
+        if (
+            remaining.isEmpty()
+        ) {
+
+            return emptyList()
+        }
+
+
+        if (
+            remaining.length <=
+            maxLength
+        ) {
+
+            return listOf(
+                remaining
+            )
+        }
+
+
+        val chunks =
+            mutableListOf<String>()
+
+
+        while (
+            remaining.length >
+            maxLength
+        ) {
+
+            val candidate =
+                remaining.substring(
+                    0,
+                    maxLength
+                )
+
+
+            val newlineIndex =
+                candidate.lastIndexOf(
+                    '\n'
+                )
+
+
+            val periodIndex =
+                candidate.lastIndexOf(
+                    ". "
+                )
+
+
+            val spaceIndex =
+                candidate.lastIndexOf(
+                    ' '
+                )
+
+
+            var cutIndex =
+                maxOf(
+                    newlineIndex,
+                    periodIndex,
+                    spaceIndex
+                )
+
+
+            if (
+                cutIndex <
+                maxLength / 2
+            ) {
+
+                cutIndex =
+                    maxLength
+            }
+
+
+            val chunk =
+                remaining
+                    .substring(
+                        0,
+                        cutIndex
+                    )
+                    .trim()
+
+
+            if (
+                chunk.isNotEmpty()
+            ) {
+
+                chunks.add(
+                    chunk
+                )
+            }
+
+
+            remaining =
+                remaining
+                    .substring(
+                        cutIndex
+                    )
+                    .trim()
+        }
+
+
+        if (
+            remaining.isNotEmpty()
+        ) {
+
+            chunks.add(
+                remaining
+            )
+        }
+
+
+        return chunks
+    }
+
+
+    // =========================================================
+// TTS 제어 Overlay
+// =========================================================
+
+private fun showTtsControlPanel(
+    textToRead: String,
+    statusMessage: String
+) {
+
+    removeResultPanel()
+
+
+    val panel =
+        LinearLayout(this).apply {
+
+            orientation =
+                LinearLayout.VERTICAL
+
+
+            setPadding(
+                dp(20),
+                dp(20),
+                dp(20),
+                dp(20)
+            )
+
+
+            background =
+                createRoundedBackground(
+
+                    backgroundColor =
+                        Color.rgb(
+                            12,
+                            12,
+                            12
+                        ),
+
+                    borderColor =
+                        Color.rgb(
+                            75,
+                            155,
+                            255
+                        ),
+
+                    radiusDp =
+                        24
+                )
+        }
+
+
+    // =====================================================
+    // 제목
+    // =====================================================
+
+    val titleView =
+        TextView(this).apply {
+
+            text =
+                "읽어줘"
+
+            textSize =
+                24f
+
+            setTextColor(
+                Color.rgb(
+                    100,
+                    190,
+                    255
+                )
+            )
+
+
+            setPadding(
+                0,
+                0,
+                0,
+                dp(18)
+            )
+        }
+
+
+    panel.addView(
+        titleView
+    )
+
+
+    // =====================================================
+    // 상태
+    // =====================================================
+
+    val statusView =
+        TextView(this).apply {
+
+            text =
+                statusMessage
+
+            textSize =
+                30f
+
+            setTextColor(
+                Color.WHITE
+            )
+
+
+            setLineSpacing(
+                dp(8).toFloat(),
+                1.25f
+            )
+
+
+            setPadding(
+                0,
+                dp(10),
+                0,
+                dp(25)
+            )
+        }
+
+
+    panel.addView(
+
+        statusView,
+
+        LinearLayout.LayoutParams(
+
+            LinearLayout.LayoutParams.MATCH_PARENT,
+
+            0,
+
+            1f
+        )
+    )
+
+
+    // =====================================================
+    // 처음부터 다시 읽기
+    // =====================================================
+
+    val replayButton =
+        Button(this).apply {
+
+            text =
+                "처음부터 다시 읽기"
+
+            textSize =
+                18f
+
+
+            setOnClickListener {
+
+                statusView.text =
+                    "처음부터 다시 읽고 있습니다."
+
+
+                speakText(
+                    textToRead
+                )
+            }
+        }
+
+
+    val replayParams =
+        LinearLayout.LayoutParams(
+
+            LinearLayout.LayoutParams.MATCH_PARENT,
+
+            dp(58)
+        )
+
+
+    replayParams.bottomMargin =
+        dp(10)
+
+
+    panel.addView(
+        replayButton,
+        replayParams
+    )
+
+
+    // =====================================================
+    // 읽기 중지
+    // =====================================================
+
+    val stopButton =
+        Button(this).apply {
+
+            text =
+                "읽기 중지"
+
+            textSize =
+                18f
+
+
+            setOnClickListener {
+
+                textToSpeech
+                    ?.stop()
+
+
+                statusView.text =
+                    "읽기를 중지했습니다."
+            }
+        }
+
+
+    val stopParams =
+        LinearLayout.LayoutParams(
+
+            LinearLayout.LayoutParams.MATCH_PARENT,
+
+            dp(58)
+        )
+
+
+    stopParams.bottomMargin =
+        dp(10)
+
+
+    panel.addView(
+        stopButton,
+        stopParams
+    )
+
+
+    // =====================================================
+    // HALO 메뉴
+    // =====================================================
+
+    val backButton =
+        Button(this).apply {
+
+            text =
+                "HALO 메뉴로 돌아가기"
+
+            textSize =
+                17f
+
+
+            setOnClickListener {
+
+                textToSpeech
+                    ?.stop()
+
+
+                removeResultPanel()
+
+                showActionMenu()
+            }
+        }
+
+
+    panel.addView(
+
+        backButton,
+
+        LinearLayout.LayoutParams(
+
+            LinearLayout.LayoutParams.MATCH_PARENT,
+
+            dp(58)
+        )
+    )
+
+
+    // =====================================================
+    // Overlay
+    // =====================================================
+
+    val params =
+        WindowManager.LayoutParams(
+
+            dp(360),
+
+            dp(430),
+
+            WindowManager.LayoutParams
+                .TYPE_ACCESSIBILITY_OVERLAY,
+
+            WindowManager.LayoutParams
+                .FLAG_NOT_FOCUSABLE,
+
+            PixelFormat.TRANSLUCENT
+        )
+
+
+    params.gravity =
+        Gravity.CENTER
+
+
+    try {
+
+        windowManager.addView(
+            panel,
+            params
+        )
+
+        resultPanel =
+            panel
+
+    } catch (
+        e: Exception
+    ) {
+
+        Log.e(
+            TAG,
+            "TTS 패널 표시 실패",
+            e
+        )
+    }
+}
+
+
+    // =========================================================
+    // 안내 / 오류 패널
     // =========================================================
 
     private fun showMessagePanel(
@@ -1388,6 +3049,7 @@ class HaloAccessibilityService : AccessibilityService() {
                 orientation =
                     LinearLayout.VERTICAL
 
+
                 setPadding(
                     dp(20),
                     dp(20),
@@ -1395,21 +3057,26 @@ class HaloAccessibilityService : AccessibilityService() {
                     dp(20)
                 )
 
+
                 background =
                     createRoundedBackground(
+
                         backgroundColor =
                             Color.rgb(
                                 18,
                                 18,
                                 18
                             ),
+
                         borderColor =
                             Color.rgb(
                                 75,
                                 155,
                                 255
                             ),
-                        radiusDp = 24
+
+                        radiusDp =
+                            24
                     )
             }
 
@@ -1423,6 +3090,7 @@ class HaloAccessibilityService : AccessibilityService() {
                 textSize =
                     23f
 
+
                 setTextColor(
                     Color.rgb(
                         100,
@@ -1430,6 +3098,7 @@ class HaloAccessibilityService : AccessibilityService() {
                         255
                     )
                 )
+
 
                 setPadding(
                     0,
@@ -1454,9 +3123,11 @@ class HaloAccessibilityService : AccessibilityService() {
                 textSize =
                     18f
 
+
                 setTextColor(
                     Color.WHITE
                 )
+
 
                 setLineSpacing(
                     dp(5).toFloat(),
@@ -1466,10 +3137,15 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
         panel.addView(
+
             messageView,
+
             LinearLayout.LayoutParams(
+
                 LinearLayout.LayoutParams.MATCH_PARENT,
+
                 0,
+
                 1f
             )
         )
@@ -1483,6 +3159,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
                 textSize =
                     17f
+
 
                 setOnClickListener {
 
@@ -1502,11 +3179,14 @@ class HaloAccessibilityService : AccessibilityService() {
             WindowManager.LayoutParams(
 
                 dp(350),
+
                 dp(360),
 
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams
+                    .TYPE_ACCESSIBILITY_OVERLAY,
 
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams
+                    .FLAG_NOT_FOCUSABLE,
 
                 PixelFormat.TRANSLUCENT
             )
@@ -1526,7 +3206,9 @@ class HaloAccessibilityService : AccessibilityService() {
             resultPanel =
                 panel
 
-        } catch (e: Exception) {
+        } catch (
+            e: Exception
+        ) {
 
             Log.e(
                 TAG,
@@ -1555,6 +3237,7 @@ class HaloAccessibilityService : AccessibilityService() {
             }
         }
 
+
         actionMenu =
             null
     }
@@ -1578,13 +3261,14 @@ class HaloAccessibilityService : AccessibilityService() {
             }
         }
 
+
         resultPanel =
             null
     }
 
 
     // =========================================================
-    // 둥근 배경 생성
+    // 둥근 배경
     // =========================================================
 
     private fun createRoundedBackground(
@@ -1593,23 +3277,28 @@ class HaloAccessibilityService : AccessibilityService() {
         radiusDp: Int
     ): GradientDrawable {
 
-        return GradientDrawable().apply {
+        return GradientDrawable()
+            .apply {
 
-            shape =
-                GradientDrawable.RECTANGLE
+                shape =
+                    GradientDrawable.RECTANGLE
 
-            cornerRadius =
-                dp(radiusDp).toFloat()
 
-            setColor(
-                backgroundColor
-            )
+                cornerRadius =
+                    dp(radiusDp)
+                        .toFloat()
 
-            setStroke(
-                dp(2),
-                borderColor
-            )
-        }
+
+                setColor(
+                    backgroundColor
+                )
+
+
+                setStroke(
+                    dp(2),
+                    borderColor
+                )
+            }
     }
 
 
@@ -1623,7 +3312,9 @@ class HaloAccessibilityService : AccessibilityService() {
 
         return (
             value *
-                resources.displayMetrics.density
+                resources
+                    .displayMetrics
+                    .density
             ).toInt()
     }
 }
