@@ -42,6 +42,21 @@ class HaloAccessibilityService : AccessibilityService() {
 
         private const val TAG = "HALO_ACCESS"
 
+        private const val VISION_PROFILE_PREFS =
+            "halo_vision_profile"
+
+        private const val KEY_PROFILE_TEXT_SIZE =
+            "profile_text_size"
+
+        private const val KEY_PROFILE_MAGNIFIER_SCALE =
+            "profile_magnifier_scale"
+
+        private const val KEY_AUTO_READ_QUESTION =
+            "auto_read_question"
+
+        private const val KEY_AUTO_READ_IMPORTANT =
+            "auto_read_important"
+
         private const val DEFAULT_TEXT_SIZE_SP = 32f
         private const val MIN_TEXT_SIZE_SP = 30f
         private const val MAX_TEXT_SIZE_SP = 72f
@@ -92,7 +107,160 @@ class HaloAccessibilityService : AccessibilityService() {
 
     private var readableTextSizeSp =
         DEFAULT_TEXT_SIZE_SP
+    
+    // =========================================================
+    // Vision Profile
+    // =========================================================
 
+    private var profileTextSizeSp =
+        DEFAULT_TEXT_SIZE_SP
+
+    private var profileMagnifierScale =
+        DEFAULT_MAGNIFIER_SCALE
+
+    private var autoReadQuestionAnswer =
+        true
+
+    private var autoReadImportantResult =
+        false
+
+    // =========================================================
+    // Vision Profile 불러오기
+    // =========================================================
+
+    private fun loadVisionProfile() {
+
+        val prefs =
+            getSharedPreferences(
+                VISION_PROFILE_PREFS,
+                MODE_PRIVATE
+            )
+
+
+        profileTextSizeSp =
+            prefs.getFloat(
+                KEY_PROFILE_TEXT_SIZE,
+                DEFAULT_TEXT_SIZE_SP
+            ).coerceIn(
+                MIN_TEXT_SIZE_SP,
+                MAX_TEXT_SIZE_SP
+            )
+
+
+        profileMagnifierScale =
+            prefs.getFloat(
+                KEY_PROFILE_MAGNIFIER_SCALE,
+                DEFAULT_MAGNIFIER_SCALE
+            ).coerceIn(
+                1.5f,
+                4.0f
+            )
+
+
+        autoReadQuestionAnswer =
+            prefs.getBoolean(
+                KEY_AUTO_READ_QUESTION,
+                true
+            )
+
+
+        autoReadImportantResult =
+            prefs.getBoolean(
+                KEY_AUTO_READ_IMPORTANT,
+                false
+            )
+
+
+        // 큰 글자 화면 최초 크기에 적용
+        readableTextSizeSp =
+            profileTextSizeSp
+
+
+        Log.d(
+            TAG,
+            """
+            Vision Profile 로드 완료
+            글자 크기: ${profileTextSizeSp}sp
+            돋보기: ${profileMagnifierScale}배
+            질문 자동 읽기: $autoReadQuestionAnswer
+            중요 정보 자동 읽기: $autoReadImportantResult
+            """.trimIndent()
+        )
+    }
+
+   // =========================================================
+    // Vision Profile 저장
+    // =========================================================
+
+    private fun saveVisionProfile(
+        textSizeSp: Float,
+        magnifierScale: Float,
+        readQuestionAutomatically: Boolean,
+        readImportantAutomatically: Boolean
+    ) {
+
+        val safeTextSize =
+            textSizeSp.coerceIn(
+                MIN_TEXT_SIZE_SP,
+                MAX_TEXT_SIZE_SP
+            )
+
+
+        val safeMagnifierScale =
+            magnifierScale.coerceIn(
+                1.5f,
+                4.0f
+            )
+
+
+        val prefs =
+            getSharedPreferences(
+                VISION_PROFILE_PREFS,
+                MODE_PRIVATE
+            )
+
+
+        prefs.edit()
+            .putFloat(
+                KEY_PROFILE_TEXT_SIZE,
+                safeTextSize
+            )
+            .putFloat(
+                KEY_PROFILE_MAGNIFIER_SCALE,
+                safeMagnifierScale
+            )
+            .putBoolean(
+                KEY_AUTO_READ_QUESTION,
+                readQuestionAutomatically
+            )
+            .putBoolean(
+                KEY_AUTO_READ_IMPORTANT,
+                readImportantAutomatically
+            )
+            .apply()
+
+
+        profileTextSizeSp =
+            safeTextSize
+
+        profileMagnifierScale =
+            safeMagnifierScale
+
+        autoReadQuestionAnswer =
+            readQuestionAutomatically
+
+        autoReadImportantResult =
+            readImportantAutomatically
+
+        readableTextSizeSp =
+            safeTextSize
+
+
+        Log.d(
+            TAG,
+            "Vision Profile 저장 완료"
+        )
+    } 
 
     // =========================================================
     // TTS
@@ -166,6 +334,7 @@ class HaloAccessibilityService : AccessibilityService() {
                 WINDOW_SERVICE
             ) as WindowManager
 
+        loadVisionProfile()
 
         initializeTextToSpeech()
 
@@ -901,6 +1070,29 @@ class HaloAccessibilityService : AccessibilityService() {
             questionButton
         )
 
+        // =====================================================
+        // 내 시야 설정
+        // =====================================================
+
+        val visionProfileButton =
+            createActionButton(
+                "⚙  내 시야 설정",
+                "글자 크기와 확대 설정"
+            )
+
+
+        visionProfileButton.setOnClickListener {
+
+            removeActionMenu()
+
+            showVisionProfileTextSizeMenu()
+        }
+
+
+        panel.addView(
+            visionProfileButton
+        )
+
 
         // =====================================================
         // 닫기
@@ -1099,6 +1291,383 @@ class HaloAccessibilityService : AccessibilityService() {
         return container
     }
 
+    // =========================================================
+    // Vision Profile - 기본 글자 크기 설정
+    // =========================================================
+
+    private fun showVisionProfileTextSizeMenu() {
+
+        removeResultPanel()
+        removeActionMenu()
+
+
+        val panel =
+            LinearLayout(this).apply {
+
+                orientation =
+                    LinearLayout.VERTICAL
+
+                setPadding(
+                    dp(20),
+                    dp(20),
+                    dp(20),
+                    dp(20)
+                )
+
+                background =
+                    createRoundedBackground(
+                        Color.rgb(
+                            18,
+                            18,
+                            18
+                        ),
+                        Color.rgb(
+                            75,
+                            155,
+                            255
+                        ),
+                        24
+                    )
+            }
+
+
+        val title =
+            TextView(this).apply {
+
+                text =
+                    "내 시야 설정"
+
+                textSize =
+                    24f
+
+                gravity =
+                    Gravity.CENTER
+
+                setTextColor(
+                    Color.rgb(
+                        100,
+                        190,
+                        255
+                    )
+                )
+
+                setPadding(
+                    0,
+                    dp(4),
+                    0,
+                    dp(8)
+                )
+            }
+
+
+        panel.addView(
+            title
+        )
+
+
+        val description =
+            TextView(this).apply {
+
+                text =
+                    "기본 글자 크기를 선택해주세요."
+
+                textSize =
+                    18f
+
+                gravity =
+                    Gravity.CENTER
+
+                setTextColor(
+                    Color.WHITE
+                )
+
+                setPadding(
+                    0,
+                    0,
+                    0,
+                    dp(10)
+                )
+            }
+
+
+        panel.addView(
+            description
+        )
+
+
+        val currentSetting =
+            TextView(this).apply {
+
+                text =
+                    "현재 설정: ${profileTextSizeSp.toInt()}sp"
+
+                textSize =
+                    17f
+
+                gravity =
+                    Gravity.CENTER
+
+                setTextColor(
+                    Color.LTGRAY
+                )
+
+                setPadding(
+                    0,
+                    0,
+                    0,
+                    dp(18)
+                )
+            }
+
+
+        panel.addView(
+            currentSetting
+        )
+
+
+        // =====================================================
+        // 글자 크기 선택 함수
+        // =====================================================
+
+        fun selectTextSize(
+            size: Float
+        ) {
+
+            saveVisionProfile(
+                textSizeSp = size,
+                magnifierScale = profileMagnifierScale,
+                readQuestionAutomatically =
+                    autoReadQuestionAnswer,
+                readImportantAutomatically =
+                    autoReadImportantResult
+            )
+
+
+            currentSetting.text =
+                "현재 설정: ${size.toInt()}sp"
+        }
+
+
+        // =====================================================
+        // 32sp
+        // =====================================================
+
+        val size32Button =
+            Button(this).apply {
+
+                text =
+                    "32sp"
+
+                textSize =
+                    18f
+
+                setOnClickListener {
+
+                    selectTextSize(
+                        32f
+                    )
+                }
+            }
+
+
+        val optionParams1 =
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(58)
+            )
+
+
+        optionParams1.bottomMargin =
+            dp(8)
+
+
+        panel.addView(
+            size32Button,
+            optionParams1
+        )
+
+
+        // =====================================================
+        // 40sp
+        // =====================================================
+
+        val size40Button =
+            Button(this).apply {
+
+                text =
+                    "40sp"
+
+                textSize =
+                    18f
+
+                setOnClickListener {
+
+                    selectTextSize(
+                        40f
+                    )
+                }
+            }
+
+
+        val optionParams2 =
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(58)
+            )
+
+
+        optionParams2.bottomMargin =
+            dp(8)
+
+
+        panel.addView(
+            size40Button,
+            optionParams2
+        )
+
+
+        // =====================================================
+        // 48sp
+        // =====================================================
+
+        val size48Button =
+            Button(this).apply {
+
+                text =
+                    "48sp"
+
+                textSize =
+                    18f
+
+                setOnClickListener {
+
+                    selectTextSize(
+                        48f
+                    )
+                }
+            }
+
+
+        val optionParams3 =
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(58)
+            )
+
+
+        optionParams3.bottomMargin =
+            dp(8)
+
+
+        panel.addView(
+            size48Button,
+            optionParams3
+        )
+
+
+        // =====================================================
+        // 56sp
+        // =====================================================
+
+        val size56Button =
+            Button(this).apply {
+
+                text =
+                    "56sp"
+
+                textSize =
+                    18f
+
+                setOnClickListener {
+
+                    selectTextSize(
+                        56f
+                    )
+                }
+            }
+
+
+        val optionParams4 =
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(58)
+            )
+
+
+        optionParams4.bottomMargin =
+            dp(14)
+
+
+        panel.addView(
+            size56Button,
+            optionParams4
+        )
+
+
+        // =====================================================
+        // HALO 메뉴로 돌아가기
+        // =====================================================
+
+        val backButton =
+            Button(this).apply {
+
+                text =
+                    "HALO 메뉴로 돌아가기"
+
+                textSize =
+                    17f
+
+                setOnClickListener {
+
+                    removeResultPanel()
+
+                    showActionMenu()
+                }
+            }
+
+
+        panel.addView(
+            backButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(56)
+            )
+        )
+
+
+        val params =
+            WindowManager.LayoutParams(
+                dp(350),
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            )
+
+
+        params.gravity =
+            Gravity.CENTER
+
+
+        try {
+
+            windowManager.addView(
+                panel,
+                params
+            )
+
+            resultPanel =
+                panel
+
+        } catch (e: Exception) {
+
+            Log.e(
+                TAG,
+                "Vision Profile 화면 표시 실패",
+                e
+            )
+        }
+    }
 
     // =========================================================
     // 보기 편하게 - 선택 화면
@@ -1537,7 +2106,7 @@ class HaloAccessibilityService : AccessibilityService() {
                             .MAGNIFICATION_MODE_WINDOW
                     )
                     .setScale(
-                        DEFAULT_MAGNIFIER_SCALE
+                        profileMagnifierScale
                     )
                     .setCenterX(
                         centerX
@@ -3861,11 +4430,12 @@ private fun checkMagnifierTrashZone(
 
                         // 질문 답변 자동 읽기
                         if (
-                            isTtsReady
-                        ) {
+                               isTtsReady &&
+                                autoReadQuestionAnswer
+                            ) {
 
-                            speakText(
-                                answer
+                                speakText(
+                                    answer
                             )
                         }
                     }
