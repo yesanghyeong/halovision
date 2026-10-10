@@ -42,6 +42,20 @@ class HaloAccessibilityService : AccessibilityService() {
 
         private const val TAG = "HALO_ACCESS"
 
+        private const val DEFAULT_TEXT_SIZE_SP = 32f
+        private const val MIN_TEXT_SIZE_SP = 30f
+        private const val MAX_TEXT_SIZE_SP = 72f
+        private const val TEXT_SIZE_STEP_SP = 4f
+
+        private const val DEFAULT_MAGNIFIER_SCALE = 2.0f
+
+        private const val SERVER_BASE_URL =
+            "http://127.0.0.1:8000"
+
+        // =====================================================
+        // Vision Profile SharedPreferences
+        // =====================================================
+
         private const val VISION_PROFILE_PREFS =
             "halo_vision_profile"
 
@@ -57,18 +71,10 @@ class HaloAccessibilityService : AccessibilityService() {
         private const val KEY_AUTO_READ_IMPORTANT =
             "auto_read_important"
 
-        private const val DEFAULT_TEXT_SIZE_SP = 32f
-        private const val MIN_TEXT_SIZE_SP = 30f
-        private const val MAX_TEXT_SIZE_SP = 72f
-        private const val TEXT_SIZE_STEP_SP = 4f
-
-        private const val SERVER_BASE_URL =
-            "http://127.0.0.1:8000"
-
-        private const val DEFAULT_MAGNIFIER_SCALE = 2.0f
-
-        // 돋보기가 종료 영역에 일정 시간 머물면 종료
-        private const val MAGNIFIER_DISMISS_DELAY_MS = 300L
+        // 돋보기가 쓰레기통 위에서 움직임이 멈춘 뒤
+        // 종료되기까지의 시간
+        private const val MAGNIFIER_DISMISS_DELAY_MS =
+            300L
     }
 
 
@@ -102,13 +108,6 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
     // =========================================================
-    // 큰 글자 크기
-    // =========================================================
-
-    private var readableTextSizeSp =
-        DEFAULT_TEXT_SIZE_SP
-    
-    // =========================================================
     // Vision Profile
     // =========================================================
 
@@ -123,6 +122,208 @@ class HaloAccessibilityService : AccessibilityService() {
 
     private var autoReadImportantResult =
         false
+
+
+    // 현재 열린 큰 글자 화면에서 사용하는 크기
+    private var readableTextSizeSp =
+        DEFAULT_TEXT_SIZE_SP
+
+
+    // =========================================================
+    // TTS
+    // =========================================================
+
+    private var textToSpeech: TextToSpeech? = null
+
+    private var isTtsReady =
+        false
+
+
+    // =========================================================
+    // Speech Recognition
+    // =========================================================
+
+    private var speechRecognizer: SpeechRecognizer? = null
+
+    private var isListeningForQuestion =
+        false
+
+
+    // =========================================================
+    // Window Magnifier
+    // =========================================================
+
+    private var magnifierTrashView: TextView? = null
+
+    private var isHaloWindowMagnifierActive =
+        false
+
+    private var isMagnifierOverTrash =
+        false
+
+    private var magnificationChangedListener:
+        AccessibilityService
+            .MagnificationController
+            .OnMagnificationChangedListener? = null
+
+
+    private val magnifierDismissRunnable =
+        Runnable {
+
+            if (
+                isHaloWindowMagnifierActive &&
+                isMagnifierOverTrash
+            ) {
+
+                stopWindowMagnifier()
+            }
+        }
+
+
+    // =========================================================
+    // AccessibilityService 시작
+    // =========================================================
+
+    override fun onServiceConnected() {
+
+        super.onServiceConnected()
+
+        Log.d(
+            TAG,
+            "Halo AccessibilityService 연결됨"
+        )
+
+        windowManager =
+            getSystemService(
+                WINDOW_SERVICE
+            ) as WindowManager
+
+
+        // 사용자 설정 먼저 불러오기
+        loadVisionProfile()
+
+        initializeTextToSpeech()
+
+        initializeSpeechRecognizer()
+
+        initializeMagnificationListener()
+
+        showFloatingHaloButton()
+    }
+
+
+    // =========================================================
+    // 자동 화면 분석 안 함
+    // =========================================================
+
+    override fun onAccessibilityEvent(
+        event: AccessibilityEvent?
+    ) {
+
+        // 사용자가 HALO 버튼을 눌렀을 때만
+        // 화면 정보를 가져온다.
+    }
+
+
+    override fun onInterrupt() {
+
+        Log.d(
+            TAG,
+            "Halo AccessibilityService 중단됨"
+        )
+    }
+
+
+    // =========================================================
+    // 서비스 종료
+    // =========================================================
+
+    override fun onDestroy() {
+
+        mainHandler.removeCallbacks(
+            magnifierDismissRunnable
+        )
+
+        hideMagnifierTrashZone()
+
+
+        if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.TIRAMISU
+        ) {
+
+            magnificationChangedListener?.let { listener ->
+
+                try {
+
+                    magnificationController.removeListener(
+                        listener
+                    )
+
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+
+        magnificationChangedListener =
+            null
+
+
+        removeActionMenu()
+
+        removeResultPanel()
+
+
+        floatingButton?.let { button ->
+
+            try {
+
+                if (::windowManager.isInitialized) {
+
+                    windowManager.removeView(
+                        button
+                    )
+                }
+
+            } catch (_: Exception) {
+            }
+        }
+
+
+        floatingButton =
+            null
+
+
+        // TTS 종료
+
+        textToSpeech?.stop()
+
+        textToSpeech?.shutdown()
+
+        textToSpeech =
+            null
+
+        isTtsReady =
+            false
+
+
+        // SpeechRecognizer 종료
+
+        speechRecognizer?.cancel()
+
+        speechRecognizer?.destroy()
+
+        speechRecognizer =
+            null
+
+        isListeningForQuestion =
+            false
+
+
+        super.onDestroy()
+    }
+
 
     // =========================================================
     // Vision Profile 불러오기
@@ -171,7 +372,6 @@ class HaloAccessibilityService : AccessibilityService() {
             )
 
 
-        // 큰 글자 화면 최초 크기에 적용
         readableTextSizeSp =
             profileTextSizeSp
 
@@ -188,7 +388,8 @@ class HaloAccessibilityService : AccessibilityService() {
         )
     }
 
-   // =========================================================
+
+    // =========================================================
     // Vision Profile 저장
     // =========================================================
 
@@ -260,203 +461,6 @@ class HaloAccessibilityService : AccessibilityService() {
             TAG,
             "Vision Profile 저장 완료"
         )
-    } 
-
-    // =========================================================
-    // TTS
-    // =========================================================
-
-    private var textToSpeech: TextToSpeech? = null
-
-    private var isTtsReady =
-        false
-
-
-    // =========================================================
-    // 음성 질문
-    // =========================================================
-
-    private var speechRecognizer: SpeechRecognizer? = null
-
-    private var isListeningForQuestion =
-        false
-
-
-    // =========================================================
-    // 창 돋보기
-    // =========================================================
-
-    private var magnifierTrashView: TextView? = null
-
-    private var isHaloWindowMagnifierActive =
-        false
-
-    private var isMagnifierOverTrash =
-        false
-
-
-    private var magnificationChangedListener:
-        AccessibilityService
-            .MagnificationController
-            .OnMagnificationChangedListener? = null
-
-
-    private val magnifierDismissRunnable =
-        Runnable {
-
-            if (
-                isHaloWindowMagnifierActive &&
-                isMagnifierOverTrash
-            ) {
-
-                stopWindowMagnifier()
-            }
-        }
-
-
-    // =========================================================
-    // AccessibilityService 시작
-    // =========================================================
-
-    override fun onServiceConnected() {
-
-        super.onServiceConnected()
-
-
-        Log.d(
-            TAG,
-            "Halo AccessibilityService 연결됨"
-        )
-
-
-        windowManager =
-            getSystemService(
-                WINDOW_SERVICE
-            ) as WindowManager
-
-        loadVisionProfile()
-
-        initializeTextToSpeech()
-
-        initializeSpeechRecognizer()
-
-        initializeMagnificationListener()
-
-        showFloatingHaloButton()
-    }
-
-
-    // =========================================================
-    // 화면 이벤트 자동 처리 안 함
-    //
-    // 사용자가 HALO를 눌렀을 때만 화면을 읽음
-    // =========================================================
-
-    override fun onAccessibilityEvent(
-        event: AccessibilityEvent?
-    ) {
-        // intentionally empty
-    }
-
-
-    override fun onInterrupt() {
-
-        Log.d(
-            TAG,
-            "Halo AccessibilityService 중단됨"
-        )
-    }
-
-
-    // =========================================================
-    // 서비스 종료
-    // =========================================================
-
-    override fun onDestroy() {
-
-        mainHandler.removeCallbacks(
-            magnifierDismissRunnable
-        )
-
-
-        hideMagnifierTrashZone()
-
-
-        if (
-            Build.VERSION.SDK_INT >=
-            Build.VERSION_CODES.TIRAMISU
-        ) {
-
-            magnificationChangedListener
-                ?.let { listener ->
-
-                    try {
-
-                        magnificationController
-                            .removeListener(
-                                listener
-                            )
-
-                    } catch (_: Exception) {
-                    }
-                }
-        }
-
-
-        magnificationChangedListener =
-            null
-
-
-        removeActionMenu()
-
-        removeResultPanel()
-
-
-        floatingButton?.let { button ->
-
-            try {
-
-                if (::windowManager.isInitialized) {
-
-                    windowManager.removeView(
-                        button
-                    )
-                }
-
-            } catch (_: Exception) {
-            }
-        }
-
-
-        floatingButton =
-            null
-
-
-        // TTS 종료
-        textToSpeech?.stop()
-
-        textToSpeech?.shutdown()
-
-        textToSpeech =
-            null
-
-        isTtsReady =
-            false
-
-
-        // SpeechRecognizer 종료
-        speechRecognizer?.cancel()
-
-        speechRecognizer?.destroy()
-
-        speechRecognizer =
-            null
-
-        isListeningForQuestion =
-            false
-
-
-        super.onDestroy()
     }
 
 
@@ -531,9 +535,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
         params.gravity =
-            Gravity.TOP or
-                Gravity.END
-
+            Gravity.TOP or Gravity.END
 
         params.x =
             dp(16)
@@ -554,9 +556,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
         button.setOnTouchListener { _, event ->
 
-            when (
-                event.action
-            ) {
+            when (event.action) {
 
                 MotionEvent.ACTION_DOWN -> {
 
@@ -587,7 +587,6 @@ class HaloAccessibilityService : AccessibilityService() {
                                 initialTouchX
                             ).toInt()
 
-
                     val dy =
                         (
                             event.rawY -
@@ -605,10 +604,8 @@ class HaloAccessibilityService : AccessibilityService() {
                     }
 
 
-                    // END 기준이라 X는 반대로 이동
                     params.x =
                         initialX - dx
-
 
                     params.y =
                         initialY + dy
@@ -616,11 +613,10 @@ class HaloAccessibilityService : AccessibilityService() {
 
                     try {
 
-                        windowManager
-                            .updateViewLayout(
-                                button,
-                                params
-                            )
+                        windowManager.updateViewLayout(
+                            button,
+                            params
+                        )
 
                     } catch (e: Exception) {
 
@@ -643,7 +639,6 @@ class HaloAccessibilityService : AccessibilityService() {
                         onHaloButtonClicked()
                     }
 
-
                     true
                 }
 
@@ -665,17 +660,11 @@ class HaloAccessibilityService : AccessibilityService() {
                 button
 
 
-            Log.d(
-                TAG,
-                "HALO 플로팅 버튼 표시 완료"
-            )
-
-
         } catch (e: Exception) {
 
             Log.e(
                 TAG,
-                "HALO 플로팅 버튼 표시 실패",
+                "HALO 버튼 표시 실패",
                 e
             )
         }
@@ -707,7 +696,6 @@ class HaloAccessibilityService : AccessibilityService() {
         removeResultPanel()
 
 
-        // 현재 실제 앱 화면을 저장
         currentScreenLines =
             captureCurrentScreen()
 
@@ -723,7 +711,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
     // =========================================================
-    // 현재 화면 Node Tree 읽기
+    // 현재 화면 Node Tree
     // =========================================================
 
     private fun captureCurrentScreen():
@@ -756,7 +744,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
     // =========================================================
-    // Node Tree 텍스트 수집
+    // Node Tree 텍스트 재귀 수집
     // =========================================================
 
     private fun collectTexts(
@@ -909,11 +897,9 @@ class HaloAccessibilityService : AccessibilityService() {
                 gravity =
                     Gravity.CENTER
 
-
                 setTextColor(
                     Color.WHITE
                 )
-
 
                 setPadding(
                     0,
@@ -944,18 +930,15 @@ class HaloAccessibilityService : AccessibilityService() {
                         "현재 화면 정보를 불러왔습니다."
                     }
 
-
                 textSize =
                     14f
 
                 gravity =
                     Gravity.CENTER
 
-
                 setTextColor(
                     Color.LTGRAY
                 )
-
 
                 setPadding(
                     0,
@@ -971,9 +954,7 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
 
-        // =====================================================
         // 보기 편하게
-        // =====================================================
 
         val readableButton =
             createActionButton(
@@ -982,13 +963,12 @@ class HaloAccessibilityService : AccessibilityService() {
             )
 
 
-        readableButton
-            .setOnClickListener {
+        readableButton.setOnClickListener {
 
-                removeActionMenu()
+            removeActionMenu()
 
-                showReadableOptionsMenu()
-            }
+            showReadableOptionsMenu()
+        }
 
 
         panel.addView(
@@ -996,9 +976,7 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
 
-        // =====================================================
         // 중요한 내용만
-        // =====================================================
 
         val importantButton =
             createActionButton(
@@ -1007,13 +985,12 @@ class HaloAccessibilityService : AccessibilityService() {
             )
 
 
-        importantButton
-            .setOnClickListener {
+        importantButton.setOnClickListener {
 
-                removeActionMenu()
+            removeActionMenu()
 
-                requestImportantScreen()
-            }
+            requestImportantScreen()
+        }
 
 
         panel.addView(
@@ -1021,9 +998,7 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
 
-        // =====================================================
         // 읽어줘
-        // =====================================================
 
         val readButton =
             createActionButton(
@@ -1032,13 +1007,12 @@ class HaloAccessibilityService : AccessibilityService() {
             )
 
 
-        readButton
-            .setOnClickListener {
+        readButton.setOnClickListener {
 
-                removeActionMenu()
+            removeActionMenu()
 
-                startReadingCurrentScreen()
-            }
+            startReadingCurrentScreen()
+        }
 
 
         panel.addView(
@@ -1046,9 +1020,7 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
 
-        // =====================================================
         // 질문하기
-        // =====================================================
 
         val questionButton =
             createActionButton(
@@ -1057,18 +1029,18 @@ class HaloAccessibilityService : AccessibilityService() {
             )
 
 
-        questionButton
-            .setOnClickListener {
+        questionButton.setOnClickListener {
 
-                removeActionMenu()
+            removeActionMenu()
 
-                startQuestionListening()
-            }
+            startQuestionListening()
+        }
 
 
         panel.addView(
             questionButton
         )
+
 
         // =====================================================
         // 내 시야 설정
@@ -1077,7 +1049,7 @@ class HaloAccessibilityService : AccessibilityService() {
         val visionProfileButton =
             createActionButton(
                 "⚙  내 시야 설정",
-                "글자 크기와 확대 설정"
+                "글자 크기와 돋보기 기본 배율"
             )
 
 
@@ -1094,9 +1066,7 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
 
-        // =====================================================
         // 닫기
-        // =====================================================
 
         val closeButton =
             Button(this).apply {
@@ -1107,7 +1077,6 @@ class HaloAccessibilityService : AccessibilityService() {
                 textSize =
                     17f
 
-
                 setOnClickListener {
 
                     removeActionMenu()
@@ -1117,9 +1086,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
         val closeParams =
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(52)
             )
 
@@ -1137,12 +1104,9 @@ class HaloAccessibilityService : AccessibilityService() {
         val params =
             WindowManager.LayoutParams(
                 dp(340),
-                WindowManager.LayoutParams
-                    .WRAP_CONTENT,
-                WindowManager.LayoutParams
-                    .TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams
-                    .FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
             )
 
@@ -1175,7 +1139,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
     // =========================================================
-    // 메뉴 버튼
+    // HALO 메뉴 버튼
     // =========================================================
 
     private fun createActionButton(
@@ -1250,7 +1214,6 @@ class HaloAccessibilityService : AccessibilityService() {
                     Color.LTGRAY
                 )
 
-
                 setPadding(
                     0,
                     dp(4),
@@ -1271,12 +1234,8 @@ class HaloAccessibilityService : AccessibilityService() {
 
         val params =
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
-                LinearLayout
-                    .LayoutParams
-                    .WRAP_CONTENT
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
             )
 
 
@@ -1291,8 +1250,9 @@ class HaloAccessibilityService : AccessibilityService() {
         return container
     }
 
+
     // =========================================================
-    // Vision Profile - 기본 글자 크기 설정
+    // Vision Profile - 내 시야 설정
     // =========================================================
 
     private fun showVisionProfileTextSizeMenu() {
@@ -1331,6 +1291,31 @@ class HaloAccessibilityService : AccessibilityService() {
             }
 
 
+        // =====================================================
+        // 전체 스크롤
+        // =====================================================
+
+        val scrollView =
+            ScrollView(this)
+
+
+        val content =
+            LinearLayout(this).apply {
+
+                orientation =
+                    LinearLayout.VERTICAL
+            }
+
+
+        scrollView.addView(
+            content
+        )
+
+
+        // =====================================================
+        // 제목
+        // =====================================================
+
         val title =
             TextView(this).apply {
 
@@ -1355,30 +1340,58 @@ class HaloAccessibilityService : AccessibilityService() {
                     0,
                     dp(4),
                     0,
-                    dp(8)
+                    dp(18)
                 )
             }
 
 
-        panel.addView(
+        content.addView(
             title
         )
 
 
-        val description =
+        // =====================================================
+        // 1. 기본 글자 크기
+        // =====================================================
+
+        val textSizeTitle =
             TextView(this).apply {
 
                 text =
-                    "기본 글자 크기를 선택해주세요."
+                    "기본 글자 크기"
 
                 textSize =
-                    18f
-
-                gravity =
-                    Gravity.CENTER
+                    21f
 
                 setTextColor(
                     Color.WHITE
+                )
+
+                setPadding(
+                    0,
+                    0,
+                    0,
+                    dp(6)
+                )
+            }
+
+
+        content.addView(
+            textSizeTitle
+        )
+
+
+        val textSizeDescription =
+            TextView(this).apply {
+
+                text =
+                    "아래 글자를 직접 보고 편한 크기를 선택하세요."
+
+                textSize =
+                    15f
+
+                setTextColor(
+                    Color.LTGRAY
                 )
 
                 setPadding(
@@ -1390,12 +1403,12 @@ class HaloAccessibilityService : AccessibilityService() {
             }
 
 
-        panel.addView(
-            description
+        content.addView(
+            textSizeDescription
         )
 
 
-        val currentSetting =
+        val currentTextSetting =
             TextView(this).apply {
 
                 text =
@@ -1404,8 +1417,253 @@ class HaloAccessibilityService : AccessibilityService() {
                 textSize =
                     17f
 
+                setTextColor(
+                    Color.rgb(
+                        100,
+                        190,
+                        255
+                    )
+                )
+
+                setPadding(
+                    0,
+                    0,
+                    0,
+                    dp(12)
+                )
+            }
+
+
+        content.addView(
+            currentTextSetting
+        )
+
+
+        fun selectTextSize(
+            size: Float
+        ) {
+
+            saveVisionProfile(
+                textSizeSp =
+                    size,
+
+                magnifierScale =
+                    profileMagnifierScale,
+
+                readQuestionAutomatically =
+                    autoReadQuestionAnswer,
+
+                readImportantAutomatically =
+                    autoReadImportantResult
+            )
+
+
+            currentTextSetting.text =
+                "현재 설정: ${size.toInt()}sp"
+        }
+
+
+        fun createTextSizeButton(
+            size: Float
+        ): Button {
+
+            return Button(this).apply {
+
+                text =
+                    "${size.toInt()}sp"
+
+                // 실제 선택할 크기와 동일하게 표시
+                textSize =
+                    size
+
+                isAllCaps =
+                    false
+
                 gravity =
                     Gravity.CENTER
+
+                setPadding(
+                    dp(8),
+                    dp(10),
+                    dp(8),
+                    dp(10)
+                )
+
+                setOnClickListener {
+
+                    selectTextSize(
+                        size
+                    )
+                }
+            }
+        }
+
+
+        val size32Button =
+            createTextSizeButton(
+                32f
+            )
+
+
+        val size32Params =
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+
+
+        size32Params.bottomMargin =
+            dp(8)
+
+
+        content.addView(
+            size32Button,
+            size32Params
+        )
+
+
+        val size40Button =
+            createTextSizeButton(
+                40f
+            )
+
+
+        val size40Params =
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+
+
+        size40Params.bottomMargin =
+            dp(8)
+
+
+        content.addView(
+            size40Button,
+            size40Params
+        )
+
+
+        val size48Button =
+            createTextSizeButton(
+                48f
+            )
+
+
+        val size48Params =
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+
+
+        size48Params.bottomMargin =
+            dp(8)
+
+
+        content.addView(
+            size48Button,
+            size48Params
+        )
+
+
+        val size56Button =
+            createTextSizeButton(
+                56f
+            )
+
+
+        val size56Params =
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+
+
+        size56Params.bottomMargin =
+            dp(28)
+
+
+        content.addView(
+            size56Button,
+            size56Params
+        )
+
+
+        // =====================================================
+        // 구분선 1
+        // =====================================================
+
+        val divider1 =
+            TextView(this).apply {
+
+                setBackgroundColor(
+                    Color.rgb(
+                        70,
+                        70,
+                        70
+                    )
+                )
+            }
+
+
+        val divider1Params =
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(1)
+            )
+
+
+        divider1Params.bottomMargin =
+            dp(22)
+
+
+        content.addView(
+            divider1,
+            divider1Params
+        )
+
+
+        // =====================================================
+        // 2. 돋보기 기본 배율
+        // =====================================================
+
+        val magnifierTitle =
+            TextView(this).apply {
+
+                text =
+                    "돋보기 기본 배율"
+
+                textSize =
+                    21f
+
+                setTextColor(
+                    Color.WHITE
+                )
+
+                setPadding(
+                    0,
+                    0,
+                    0,
+                    dp(6)
+                )
+            }
+
+
+        content.addView(
+            magnifierTitle
+        )
+
+
+        val magnifierDescription =
+            TextView(this).apply {
+
+                text =
+                    "돋보기를 시작했을 때 사용할 확대 배율입니다."
+
+                textSize =
+                    15f
 
                 setTextColor(
                     Color.LTGRAY
@@ -1415,192 +1673,574 @@ class HaloAccessibilityService : AccessibilityService() {
                     0,
                     0,
                     0,
-                    dp(18)
+                    dp(10)
                 )
             }
 
 
-        panel.addView(
-            currentSetting
+        content.addView(
+            magnifierDescription
         )
 
 
-        // =====================================================
-        // 글자 크기 선택 함수
-        // =====================================================
+        val currentMagnifierSetting =
+            TextView(this).apply {
 
-        fun selectTextSize(
-            size: Float
+                text =
+                    "현재 설정: ${formatMagnifierScale(profileMagnifierScale)}"
+
+                textSize =
+                    17f
+
+                setTextColor(
+                    Color.rgb(
+                        100,
+                        190,
+                        255
+                    )
+                )
+
+                setPadding(
+                    0,
+                    0,
+                    0,
+                    dp(12)
+                )
+            }
+
+
+        content.addView(
+            currentMagnifierSetting
+        )
+
+
+        fun selectMagnifierScale(
+            scale: Float
         ) {
 
             saveVisionProfile(
-                textSizeSp = size,
-                magnifierScale = profileMagnifierScale,
+                textSizeSp =
+                    profileTextSizeSp,
+
+                magnifierScale =
+                    scale,
+
                 readQuestionAutomatically =
                     autoReadQuestionAnswer,
+
                 readImportantAutomatically =
                     autoReadImportantResult
             )
 
 
-            currentSetting.text =
-                "현재 설정: ${size.toInt()}sp"
+            currentMagnifierSetting.text =
+                "현재 설정: ${formatMagnifierScale(scale)}"
         }
 
 
         // =====================================================
-        // 32sp
+        // 1.5 / 2배
         // =====================================================
 
-        val size32Button =
+        val magnifierRow1 =
+            LinearLayout(this).apply {
+
+                orientation =
+                    LinearLayout.HORIZONTAL
+            }
+
+
+        val scale15Button =
             Button(this).apply {
 
                 text =
-                    "32sp"
+                    "1.5배"
 
                 textSize =
                     18f
 
                 setOnClickListener {
 
-                    selectTextSize(
-                        32f
+                    selectMagnifierScale(
+                        1.5f
                     )
                 }
             }
 
 
-        val optionParams1 =
+        val scale20Button =
+            Button(this).apply {
+
+                text =
+                    "2배"
+
+                textSize =
+                    18f
+
+                setOnClickListener {
+
+                    selectMagnifierScale(
+                        2.0f
+                    )
+                }
+            }
+
+
+        val scale15Params =
             LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(58)
+                0,
+                dp(58),
+                1f
             )
 
 
-        optionParams1.bottomMargin =
-            dp(8)
+        scale15Params.marginEnd =
+            dp(5)
 
 
-        panel.addView(
-            size32Button,
-            optionParams1
+        val scale20Params =
+            LinearLayout.LayoutParams(
+                0,
+                dp(58),
+                1f
+            )
+
+
+        scale20Params.marginStart =
+            dp(5)
+
+
+        magnifierRow1.addView(
+            scale15Button,
+            scale15Params
+        )
+
+
+        magnifierRow1.addView(
+            scale20Button,
+            scale20Params
+        )
+
+
+        content.addView(
+            magnifierRow1
         )
 
 
         // =====================================================
-        // 40sp
+        // 2.5 / 3배
         // =====================================================
 
-        val size40Button =
+        val magnifierRow2 =
+            LinearLayout(this).apply {
+
+                orientation =
+                    LinearLayout.HORIZONTAL
+            }
+
+
+        val scale25Button =
             Button(this).apply {
 
                 text =
-                    "40sp"
+                    "2.5배"
 
                 textSize =
                     18f
 
                 setOnClickListener {
 
-                    selectTextSize(
-                        40f
+                    selectMagnifierScale(
+                        2.5f
                     )
                 }
             }
 
 
-        val optionParams2 =
+        val scale30Button =
+            Button(this).apply {
+
+                text =
+                    "3배"
+
+                textSize =
+                    18f
+
+                setOnClickListener {
+
+                    selectMagnifierScale(
+                        3.0f
+                    )
+                }
+            }
+
+
+        val scale25Params =
             LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(58)
+                0,
+                dp(58),
+                1f
             )
 
 
-        optionParams2.bottomMargin =
+        scale25Params.marginEnd =
+            dp(5)
+
+        scale25Params.topMargin =
             dp(8)
 
 
-        panel.addView(
-            size40Button,
-            optionParams2
+        val scale30Params =
+            LinearLayout.LayoutParams(
+                0,
+                dp(58),
+                1f
+            )
+
+
+        scale30Params.marginStart =
+            dp(5)
+
+        scale30Params.topMargin =
+            dp(8)
+
+
+        magnifierRow2.addView(
+            scale25Button,
+            scale25Params
+        )
+
+
+        magnifierRow2.addView(
+            scale30Button,
+            scale30Params
+        )
+
+
+        content.addView(
+            magnifierRow2
+        )
+
+
+        val magnifierGuide =
+            TextView(this).apply {
+
+                text =
+                    "설정한 배율은 다음에 돋보기를 시작할 때 적용됩니다."
+
+                textSize =
+                    14f
+
+                setTextColor(
+                    Color.LTGRAY
+                )
+
+                setPadding(
+                    0,
+                    dp(10),
+                    0,
+                    dp(24)
+                )
+            }
+
+
+        content.addView(
+            magnifierGuide
         )
 
 
         // =====================================================
-        // 48sp
+        // 구분선 2
         // =====================================================
 
-        val size48Button =
-            Button(this).apply {
+        val divider2 =
+            TextView(this).apply {
 
-                text =
-                    "48sp"
-
-                textSize =
-                    18f
-
-                setOnClickListener {
-
-                    selectTextSize(
-                        48f
+                setBackgroundColor(
+                    Color.rgb(
+                        70,
+                        70,
+                        70
                     )
-                }
+                )
             }
 
 
-        val optionParams3 =
+        val divider2Params =
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(58)
+                dp(1)
             )
 
 
-        optionParams3.bottomMargin =
-            dp(8)
+        divider2Params.bottomMargin =
+            dp(22)
 
 
-        panel.addView(
-            size48Button,
-            optionParams3
+        content.addView(
+            divider2,
+            divider2Params
         )
 
 
         // =====================================================
-        // 56sp
+        // 3. 음성 설정
         // =====================================================
 
-        val size56Button =
-            Button(this).apply {
+        val voiceTitle =
+            TextView(this).apply {
 
                 text =
-                    "56sp"
+                    "음성 설정"
 
                 textSize =
-                    18f
+                    21f
 
-                setOnClickListener {
+                setTextColor(
+                    Color.WHITE
+                )
 
-                    selectTextSize(
-                        56f
-                    )
-                }
+                setPadding(
+                    0,
+                    0,
+                    0,
+                    dp(6)
+                )
             }
 
 
-        val optionParams4 =
+        content.addView(
+            voiceTitle
+        )
+
+
+        val voiceDescription =
+            TextView(this).apply {
+
+                text =
+                    "AI 결과가 나오면 자동으로 읽을지 선택합니다."
+
+                textSize =
+                    15f
+
+                setTextColor(
+                    Color.LTGRAY
+                )
+
+                setPadding(
+                    0,
+                    0,
+                    0,
+                    dp(14)
+                )
+            }
+
+
+        content.addView(
+            voiceDescription
+        )
+
+
+        // =====================================================
+        // 질문 답변 자동 읽기
+        // =====================================================
+
+        val questionAutoReadButton =
+            Button(this)
+
+
+        fun updateQuestionAutoReadButton() {
+
+            questionAutoReadButton.text =
+                if (
+                    autoReadQuestionAnswer
+                ) {
+
+                    "🔊 질문 답변 자동 읽기 : ON"
+
+                } else {
+
+                    "🔇 질문 답변 자동 읽기 : OFF"
+                }
+        }
+
+
+        questionAutoReadButton.apply {
+
+            textSize =
+                18f
+
+            isAllCaps =
+                false
+
+
+            setOnClickListener {
+
+                autoReadQuestionAnswer =
+                    !autoReadQuestionAnswer
+
+
+                saveVisionProfile(
+                    textSizeSp =
+                        profileTextSizeSp,
+
+                    magnifierScale =
+                        profileMagnifierScale,
+
+                    readQuestionAutomatically =
+                        autoReadQuestionAnswer,
+
+                    readImportantAutomatically =
+                        autoReadImportantResult
+                )
+
+
+                updateQuestionAutoReadButton()
+            }
+        }
+
+
+        updateQuestionAutoReadButton()
+
+
+        val questionAutoParams =
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(58)
+                dp(62)
             )
 
 
-        optionParams4.bottomMargin =
-            dp(14)
+        questionAutoParams.bottomMargin =
+            dp(10)
 
+
+        content.addView(
+            questionAutoReadButton,
+            questionAutoParams
+        )
+
+
+        // =====================================================
+        // 중요 정보 자동 읽기
+        // =====================================================
+
+        val importantAutoReadButton =
+            Button(this)
+
+
+        fun updateImportantAutoReadButton() {
+
+            importantAutoReadButton.text =
+                if (
+                    autoReadImportantResult
+                ) {
+
+                    "🔊 중요 정보 자동 읽기 : ON"
+
+                } else {
+
+                    "🔇 중요 정보 자동 읽기 : OFF"
+                }
+        }
+
+
+        importantAutoReadButton.apply {
+
+            textSize =
+                18f
+
+            isAllCaps =
+                false
+
+
+            setOnClickListener {
+
+                autoReadImportantResult =
+                    !autoReadImportantResult
+
+
+                saveVisionProfile(
+                    textSizeSp =
+                        profileTextSizeSp,
+
+                    magnifierScale =
+                        profileMagnifierScale,
+
+                    readQuestionAutomatically =
+                        autoReadQuestionAnswer,
+
+                    readImportantAutomatically =
+                        autoReadImportantResult
+                )
+
+
+                updateImportantAutoReadButton()
+            }
+        }
+
+
+        updateImportantAutoReadButton()
+
+
+        val importantAutoParams =
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(62)
+            )
+
+
+        importantAutoParams.bottomMargin =
+            dp(12)
+
+
+        content.addView(
+            importantAutoReadButton,
+            importantAutoParams
+        )
+
+
+        // =====================================================
+        // 음성 설명
+        // =====================================================
+
+        val voiceGuide =
+            TextView(this).apply {
+
+                text =
+                    "자동 읽기를 꺼도 결과 화면의 읽기 버튼으로 직접 들을 수 있습니다."
+
+                textSize =
+                    14f
+
+                setTextColor(
+                    Color.LTGRAY
+                )
+
+                setPadding(
+                    0,
+                    0,
+                    0,
+                    dp(20)
+                )
+            }
+
+
+        content.addView(
+            voiceGuide
+        )
+
+
+        // =====================================================
+        // 스크롤 영역
+        // =====================================================
 
         panel.addView(
-            size56Button,
-            optionParams4
+            scrollView,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
         )
 
 
@@ -1635,10 +2275,14 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
 
+        // =====================================================
+        // Overlay
+        // =====================================================
+
         val params =
             WindowManager.LayoutParams(
-                dp(350),
-                WindowManager.LayoutParams.WRAP_CONTENT,
+                dp(370),
+                dp(680),
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
@@ -1656,8 +2300,10 @@ class HaloAccessibilityService : AccessibilityService() {
                 params
             )
 
+
             resultPanel =
                 panel
+
 
         } catch (e: Exception) {
 
@@ -1669,8 +2315,30 @@ class HaloAccessibilityService : AccessibilityService() {
         }
     }
 
+
     // =========================================================
-    // 보기 편하게 - 선택 화면
+    // 배율 표시 문자열
+    // =========================================================
+
+    private fun formatMagnifierScale(
+        scale: Float
+    ): String {
+
+        return if (
+            scale % 1f == 0f
+        ) {
+
+            "${scale.toInt()}배"
+
+        } else {
+
+            "${scale}배"
+        }
+    }
+
+
+    // =========================================================
+    // 보기 편하게 - 선택
     // =========================================================
 
     private fun showReadableOptionsMenu() {
@@ -1686,14 +2354,12 @@ class HaloAccessibilityService : AccessibilityService() {
                 orientation =
                     LinearLayout.VERTICAL
 
-
                 setPadding(
                     dp(20),
                     dp(20),
                     dp(20),
                     dp(20)
                 )
-
 
                 background =
                     createRoundedBackground(
@@ -1724,7 +2390,6 @@ class HaloAccessibilityService : AccessibilityService() {
                 gravity =
                     Gravity.CENTER
 
-
                 setTextColor(
                     Color.rgb(
                         100,
@@ -1732,7 +2397,6 @@ class HaloAccessibilityService : AccessibilityService() {
                         255
                     )
                 )
-
 
                 setPadding(
                     0,
@@ -1760,11 +2424,9 @@ class HaloAccessibilityService : AccessibilityService() {
                 gravity =
                     Gravity.CENTER
 
-
                 setTextColor(
                     Color.WHITE
                 )
-
 
                 setPadding(
                     0,
@@ -1780,10 +2442,6 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
 
-        // =====================================================
-        // 창 돋보기
-        // =====================================================
-
         val magnifierButton =
             createActionButton(
                 "🔎  돋보기로 보기",
@@ -1791,23 +2449,18 @@ class HaloAccessibilityService : AccessibilityService() {
             )
 
 
-        magnifierButton
-            .setOnClickListener {
+        magnifierButton.setOnClickListener {
 
-                removeResultPanel()
+            removeResultPanel()
 
-                startWindowMagnifier()
-            }
+            startWindowMagnifier()
+        }
 
 
         panel.addView(
             magnifierButton
         )
 
-
-        // =====================================================
-        // 큰 글자로 보기
-        // =====================================================
 
         val largeTextButton =
             createActionButton(
@@ -1816,43 +2469,36 @@ class HaloAccessibilityService : AccessibilityService() {
             )
 
 
-        largeTextButton
-            .setOnClickListener {
+        largeTextButton.setOnClickListener {
 
-                removeResultPanel()
-
-
-                if (
-                    currentScreenLines.isEmpty()
-                ) {
-
-                    showMessagePanel(
-                        "보기 편하게",
-                        "현재 화면에서 읽을 수 있는 텍스트가 없습니다."
-                    )
+            removeResultPanel()
 
 
-                    return@setOnClickListener
-                }
+            if (
+                currentScreenLines.isEmpty()
+            ) {
 
-
-                showReadablePanel(
-                    currentScreenLines
-                        .joinToString(
-                            "\n\n"
-                        )
+                showMessagePanel(
+                    "보기 편하게",
+                    "현재 화면에서 읽을 수 있는 텍스트가 없습니다."
                 )
+
+                return@setOnClickListener
             }
+
+
+            showReadablePanel(
+                currentScreenLines.joinToString(
+                    "\n\n"
+                )
+            )
+        }
 
 
         panel.addView(
             largeTextButton
         )
 
-
-        // =====================================================
-        // 돌아가기
-        // =====================================================
 
         val backButton =
             Button(this).apply {
@@ -1862,7 +2508,6 @@ class HaloAccessibilityService : AccessibilityService() {
 
                 textSize =
                     17f
-
 
                 setOnClickListener {
 
@@ -1875,9 +2520,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
         val backParams =
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(56)
             )
 
@@ -1895,12 +2538,9 @@ class HaloAccessibilityService : AccessibilityService() {
         val params =
             WindowManager.LayoutParams(
                 dp(350),
-                WindowManager.LayoutParams
-                    .WRAP_CONTENT,
-                WindowManager.LayoutParams
-                    .TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams
-                    .FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
             )
 
@@ -1916,10 +2556,8 @@ class HaloAccessibilityService : AccessibilityService() {
                 params
             )
 
-
             resultPanel =
                 panel
-
 
         } catch (e: Exception) {
 
@@ -1933,7 +2571,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
     // =========================================================
-    // 창 돋보기 변경 리스너
+    // Magnification Listener
     // =========================================================
 
     private fun initializeMagnificationListener() {
@@ -1960,7 +2598,6 @@ class HaloAccessibilityService : AccessibilityService() {
                     .OnMagnificationChangedListener {
 
 
-                // Android 13 이상
                 override fun onMagnificationChanged(
                     controller:
                         AccessibilityService
@@ -1976,8 +2613,6 @@ class HaloAccessibilityService : AccessibilityService() {
                     }
 
 
-                    // 창 돋보기가 꺼졌거나
-                    // 다른 확대 모드로 바뀐 경우
                     if (
                         config.mode !=
                         MagnificationConfig
@@ -1988,19 +2623,16 @@ class HaloAccessibilityService : AccessibilityService() {
                         isHaloWindowMagnifierActive =
                             false
 
-
                         isMagnifierOverTrash =
                             false
 
 
-                        mainHandler
-                            .removeCallbacks(
-                                magnifierDismissRunnable
-                            )
+                        mainHandler.removeCallbacks(
+                            magnifierDismissRunnable
+                        )
 
 
                         hideMagnifierTrashZone()
-
 
                         return
                     }
@@ -2012,7 +2644,6 @@ class HaloAccessibilityService : AccessibilityService() {
                 }
 
 
-                // 구형 Fullscreen Magnification 콜백
                 @Suppress("DEPRECATION")
                 override fun onMagnificationChanged(
                     controller:
@@ -2024,35 +2655,28 @@ class HaloAccessibilityService : AccessibilityService() {
                     centerY: Float
                 ) {
 
-                    // Window Magnification에서는 사용하지 않음
+                    // Window Magnification에서는 사용 안 함
                 }
             }
 
 
         try {
 
-            magnificationController
-                .addListener(
-                    listener,
-                    mainHandler
-                )
+            magnificationController.addListener(
+                listener,
+                mainHandler
+            )
 
 
             magnificationChangedListener =
                 listener
 
 
-            Log.d(
-                TAG,
-                "돋보기 변경 리스너 등록 완료"
-            )
-
-
         } catch (e: Exception) {
 
             Log.e(
                 TAG,
-                "돋보기 변경 리스너 등록 실패",
+                "돋보기 리스너 등록 실패",
                 e
             )
         }
@@ -2060,7 +2684,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
     // =========================================================
-    // 이동 가능한 창 돋보기 시작
+    // 창 돋보기 시작
     // =========================================================
 
     private fun startWindowMagnifier() {
@@ -2075,7 +2699,6 @@ class HaloAccessibilityService : AccessibilityService() {
                 "이 기능은 Android 13 이상에서 사용할 수 있습니다."
             )
 
-
             return
         }
 
@@ -2088,16 +2711,6 @@ class HaloAccessibilityService : AccessibilityService() {
                     .bounds
 
 
-            val centerX =
-                bounds.centerX()
-                    .toFloat()
-
-
-            val centerY =
-                bounds.centerY()
-                    .toFloat()
-
-
             val config =
                 MagnificationConfig
                     .Builder()
@@ -2105,14 +2718,17 @@ class HaloAccessibilityService : AccessibilityService() {
                         MagnificationConfig
                             .MAGNIFICATION_MODE_WINDOW
                     )
+                    // Vision Profile 적용
                     .setScale(
                         profileMagnifierScale
                     )
                     .setCenterX(
-                        centerX
+                        bounds.centerX()
+                            .toFloat()
                     )
                     .setCenterY(
-                        centerY
+                        bounds.centerY()
+                            .toFloat()
                     )
                     .build()
 
@@ -2125,19 +2741,10 @@ class HaloAccessibilityService : AccessibilityService() {
                     )
 
 
-            Log.d(
-                TAG,
-                "창 돋보기 시작 / 성공: $success"
-            )
-
-
-            if (
-                success
-            ) {
+            if (success) {
 
                 isHaloWindowMagnifierActive =
                     true
-
 
                 isMagnifierOverTrash =
                     false
@@ -2186,17 +2793,13 @@ class HaloAccessibilityService : AccessibilityService() {
         }
 
 
-        mainHandler
-            .removeCallbacks(
-                magnifierDismissRunnable
-            )
+        mainHandler.removeCallbacks(
+            magnifierDismissRunnable
+        )
 
 
-        // 종료 콜백이 들어와도
-        // 중복 처리하지 않도록 먼저 false
         isHaloWindowMagnifierActive =
             false
-
 
         isMagnifierOverTrash =
             false
@@ -2211,22 +2814,12 @@ class HaloAccessibilityService : AccessibilityService() {
                     )
 
 
-            Log.d(
-                TAG,
-                "창 돋보기 종료 / 성공: $success"
-            )
-
-
-            if (
-                success
-            ) {
+            if (success) {
 
                 hideMagnifierTrashZone()
 
-
             } else {
 
-                // 실패했으면 다시 활성 상태
                 isHaloWindowMagnifierActive =
                     true
             }
@@ -2248,7 +2841,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
     // =========================================================
-    // 쓰레기통 종료 영역 표시
+    // 돋보기 쓰레기통
     // =========================================================
 
     private fun showMagnifierTrashZone() {
@@ -2268,11 +2861,9 @@ class HaloAccessibilityService : AccessibilityService() {
                 gravity =
                     Gravity.CENTER
 
-
                 setTextColor(
                     Color.WHITE
                 )
-
 
                 setPadding(
                     dp(12),
@@ -2280,7 +2871,6 @@ class HaloAccessibilityService : AccessibilityService() {
                     dp(12),
                     dp(8)
                 )
-
 
                 background =
                     createRoundedBackground(
@@ -2303,15 +2893,9 @@ class HaloAccessibilityService : AccessibilityService() {
             WindowManager.LayoutParams(
                 dp(210),
                 dp(88),
-                WindowManager.LayoutParams
-                    .TYPE_ACCESSIBILITY_OVERLAY,
-
-                // 화면 조작을 방해하지 않음
-                WindowManager.LayoutParams
-                    .FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams
-                        .FLAG_NOT_TOUCHABLE,
-
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
                 PixelFormat.TRANSLUCENT
             )
 
@@ -2349,90 +2933,85 @@ class HaloAccessibilityService : AccessibilityService() {
 
 
     // =========================================================
-// 돋보기와 쓰레기통 영역 충돌 확인
-//
-// 쓰레기통 위에서 계속 이동 중이면 종료하지 않고,
-// 이동이 멈춘 뒤 일정 시간이 지나면 종료한다.
-// → 사용자 입장에서는 "놓으면 종료"처럼 동작
-// =========================================================
+    // 쓰레기통 충돌 확인
+    //
+    // 움직이는 동안 계속 타이머를 초기화.
+    // 사용자가 손을 놓아 위치 변경이 멈추면
+    // 300ms 뒤 종료 → 드롭과 비슷한 UX.
+    // =========================================================
 
-private fun checkMagnifierTrashZone(
-    region: Region
-) {
-
-    val magnifierBounds =
-        region.bounds
-
-
-    if (
-        magnifierBounds.isEmpty
+    private fun checkMagnifierTrashZone(
+        region: Region
     ) {
-        return
-    }
+
+        val magnifierBounds =
+            region.bounds
 
 
-    val screenBounds =
-        windowManager
-            .currentWindowMetrics
-            .bounds
+        if (
+            magnifierBounds.isEmpty
+        ) {
+            return
+        }
 
 
-    // ---------------------------------------------------------
-    // 쓰레기통 감지 영역
-    // ---------------------------------------------------------
-
-    val detectionWidth =
-        dp(300)
+        val screenBounds =
+            windowManager
+                .currentWindowMetrics
+                .bounds
 
 
-    val detectionHeight =
-        dp(180)
+        val detectionWidth =
+            dp(300)
 
 
-    val detectionLeft =
-        screenBounds.centerX() -
-            detectionWidth / 2
+        val detectionHeight =
+            dp(180)
 
 
-    val detectionRight =
-        screenBounds.centerX() +
-            detectionWidth / 2
+        val detectionLeft =
+            screenBounds.centerX() -
+                detectionWidth / 2
 
 
-    val detectionTop =
-        screenBounds.bottom -
-            detectionHeight
+        val detectionRight =
+            screenBounds.centerX() +
+                detectionWidth / 2
 
 
-    val horizontalOverlap =
-        magnifierBounds.right >= detectionLeft &&
-            magnifierBounds.left <= detectionRight
+        val detectionTop =
+            screenBounds.bottom -
+                detectionHeight
 
 
-    val verticalOverlap =
-        magnifierBounds.bottom >= detectionTop
+        val horizontalOverlap =
+            magnifierBounds.right >=
+                detectionLeft &&
+                magnifierBounds.left <=
+                detectionRight
 
 
-    val overTrash =
-        horizontalOverlap &&
-            verticalOverlap
+        val verticalOverlap =
+            magnifierBounds.bottom >=
+                detectionTop
 
 
-    // =========================================================
-    // 쓰레기통 영역 안
-    // =========================================================
-
-    if (overTrash) {
-
-        // 처음 진입했을 때만 UI 변경
-        if (!isMagnifierOverTrash) {
-
-            isMagnifierOverTrash =
-                true
+        val overTrash =
+            horizontalOverlap &&
+                verticalOverlap
 
 
-            magnifierTrashView
-                ?.apply {
+        if (overTrash) {
+
+            if (
+                !isMagnifierOverTrash
+            ) {
+
+                isMagnifierOverTrash =
+                    true
+
+
+                magnifierTrashView?.apply {
 
                     text =
                         "🗑\n여기에서 놓으면 종료"
@@ -2453,50 +3032,37 @@ private fun checkMagnifierTrashZone(
                             22
                         )
                 }
-        }
+            }
 
 
-        // -----------------------------------------------------
-        // 핵심
-        //
-        // 돋보기가 움직일 때마다 이 함수가 다시 호출되므로
-        // 기존 종료 예약을 계속 취소한다.
-        //
-        // 사용자가 손을 떼어 움직임이 멈추면
-        // 더 이상 콜백이 들어오지 않고
-        // 마지막 예약만 실행된다.
-        // -----------------------------------------------------
-
-        mainHandler.removeCallbacks(
-            magnifierDismissRunnable
-        )
+            // 이동할 때마다 타이머 초기화
+            mainHandler.removeCallbacks(
+                magnifierDismissRunnable
+            )
 
 
-        mainHandler.postDelayed(
-            magnifierDismissRunnable,
-            MAGNIFIER_DISMISS_DELAY_MS
-        )
+            mainHandler.postDelayed(
+                magnifierDismissRunnable,
+                MAGNIFIER_DISMISS_DELAY_MS
+            )
 
 
-    } else {
+        } else {
 
-        // =====================================================
-        // 쓰레기통 영역 밖
-        // =====================================================
-
-        mainHandler.removeCallbacks(
-            magnifierDismissRunnable
-        )
+            mainHandler.removeCallbacks(
+                magnifierDismissRunnable
+            )
 
 
-        if (isMagnifierOverTrash) {
+            if (
+                isMagnifierOverTrash
+            ) {
 
-            isMagnifierOverTrash =
-                false
+                isMagnifierOverTrash =
+                    false
 
 
-            magnifierTrashView
-                ?.apply {
+                magnifierTrashView?.apply {
 
                     text =
                         "🗑\n돋보기를 여기로 이동"
@@ -2517,42 +3083,38 @@ private fun checkMagnifierTrashZone(
                             22
                         )
                 }
+            }
         }
     }
-}
 
 
     // =========================================================
-    // 쓰레기통 제거
+    // 쓰레기통 숨기기
     // =========================================================
 
     private fun hideMagnifierTrashZone() {
 
-        mainHandler
-            .removeCallbacks(
-                magnifierDismissRunnable
-            )
+        mainHandler.removeCallbacks(
+            magnifierDismissRunnable
+        )
 
 
-        magnifierTrashView
-            ?.let { view ->
+        magnifierTrashView?.let { view ->
 
-                try {
+            try {
 
-                    if (
-                        ::windowManager
-                            .isInitialized
-                    ) {
+                if (
+                    ::windowManager.isInitialized
+                ) {
 
-                        windowManager
-                            .removeView(
-                                view
-                            )
-                    }
-
-                } catch (_: Exception) {
+                    windowManager.removeView(
+                        view
+                    )
                 }
+
+            } catch (_: Exception) {
             }
+        }
 
 
         magnifierTrashView =
@@ -2567,6 +3129,11 @@ private fun checkMagnifierTrashZone(
     private fun showReadablePanel(
         screenText: String
     ) {
+
+        // 새 화면을 열 때 Vision Profile의 기본 크기 적용
+        readableTextSizeSp =
+            profileTextSizeSp
+
 
         showZoomTextPanel(
             titleText =
@@ -2602,16 +3169,14 @@ private fun checkMagnifierTrashZone(
                 "현재 화면에서 읽을 수 있는 정보가 없습니다."
             )
 
-
             return
         }
 
 
         val screenText =
-            currentScreenLines
-                .joinToString(
-                    "\n"
-                )
+            currentScreenLines.joinToString(
+                "\n"
+            )
 
 
         showMessagePanel(
@@ -2642,24 +3207,20 @@ private fun checkMagnifierTrashZone(
                 connection.requestMethod =
                     "POST"
 
-
                 connection.connectTimeout =
                     10000
 
-
                 connection.readTimeout =
                     30000
-
 
                 connection.doOutput =
                     true
 
 
-                connection
-                    .setRequestProperty(
-                        "Content-Type",
-                        "application/json; charset=UTF-8"
-                    )
+                connection.setRequestProperty(
+                    "Content-Type",
+                    "application/json; charset=UTF-8"
+                )
 
 
                 val requestJson =
@@ -2672,21 +3233,18 @@ private fun checkMagnifierTrashZone(
                     }
 
 
-                connection
-                    .outputStream
-                    .use { output ->
+                connection.outputStream.use { output ->
 
-                        output.write(
-                            requestJson
-                                .toString()
-                                .toByteArray(
-                                    Charsets.UTF_8
-                                )
-                        )
+                    output.write(
+                        requestJson
+                            .toString()
+                            .toByteArray(
+                                Charsets.UTF_8
+                            )
+                    )
 
-
-                        output.flush()
-                    }
+                    output.flush()
+                }
 
 
                 val responseCode =
@@ -2741,6 +3299,17 @@ private fun checkMagnifierTrashZone(
                         showImportantResultPanel(
                             answer
                         )
+
+
+                        if (
+                            isTtsReady &&
+                            autoReadImportantResult
+                        ) {
+
+                            speakText(
+                                answer
+                            )
+                        }
                     }
 
 
@@ -2776,8 +3345,7 @@ private fun checkMagnifierTrashZone(
 
             } finally {
 
-                connection
-                    ?.disconnect()
+                connection?.disconnect()
             }
 
         }.start()
@@ -2791,6 +3359,10 @@ private fun checkMagnifierTrashZone(
     private fun showImportantResultPanel(
         answer: String
     ) {
+
+        readableTextSizeSp =
+            profileTextSizeSp
+
 
         showZoomTextPanel(
             titleText =
@@ -2841,7 +3413,7 @@ private fun checkMagnifierTrashZone(
 
 
     // =========================================================
-    // 공통 확대 텍스트 화면
+    // 공통 큰 글자 패널
     // =========================================================
 
     private fun showZoomTextPanel(
@@ -2861,14 +3433,12 @@ private fun checkMagnifierTrashZone(
                 orientation =
                     LinearLayout.VERTICAL
 
-
                 setPadding(
                     dp(18),
                     dp(18),
                     dp(18),
                     dp(18)
                 )
-
 
                 background =
                     createRoundedBackground(
@@ -2907,7 +3477,6 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     23f
 
-
                 setTextColor(
                     Color.rgb(
                         100,
@@ -2922,9 +3491,7 @@ private fun checkMagnifierTrashZone(
             title,
             LinearLayout.LayoutParams(
                 0,
-                LinearLayout
-                    .LayoutParams
-                    .WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
                 1f
             )
         )
@@ -2942,11 +3509,9 @@ private fun checkMagnifierTrashZone(
                 gravity =
                     Gravity.CENTER
 
-
                 setTextColor(
                     Color.WHITE
                 )
-
 
                 setPadding(
                     dp(10),
@@ -2954,7 +3519,6 @@ private fun checkMagnifierTrashZone(
                     dp(10),
                     dp(6)
                 )
-
 
                 background =
                     createRoundedBackground(
@@ -2992,11 +3556,9 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     14f
 
-
                 setTextColor(
                     Color.LTGRAY
                 )
-
 
                 setPadding(
                     0,
@@ -3011,10 +3573,6 @@ private fun checkMagnifierTrashZone(
             guide
         )
 
-
-        // =====================================================
-        // A- / A+
-        // =====================================================
 
         val zoomRow =
             LinearLayout(this).apply {
@@ -3087,10 +3645,6 @@ private fun checkMagnifierTrashZone(
         )
 
 
-        // =====================================================
-        // 텍스트
-        // =====================================================
-
         val scrollView =
             ScrollView(this)
 
@@ -3136,9 +3690,7 @@ private fun checkMagnifierTrashZone(
         panel.addView(
             scrollView,
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
                 1f
             )
@@ -3150,11 +3702,10 @@ private fun checkMagnifierTrashZone(
         ) {
 
             readableTextSizeSp =
-                newSize
-                    .coerceIn(
-                        MIN_TEXT_SIZE_SP,
-                        MAX_TEXT_SIZE_SP
-                    )
+                newSize.coerceIn(
+                    MIN_TEXT_SIZE_SP,
+                    MAX_TEXT_SIZE_SP
+                )
 
 
             content.setTextSize(
@@ -3168,29 +3719,23 @@ private fun checkMagnifierTrashZone(
         }
 
 
-        decreaseButton
-            .setOnClickListener {
+        decreaseButton.setOnClickListener {
 
-                updateTextSize(
-                    readableTextSizeSp -
-                        TEXT_SIZE_STEP_SP
-                )
-            }
-
-
-        increaseButton
-            .setOnClickListener {
-
-                updateTextSize(
-                    readableTextSizeSp +
-                        TEXT_SIZE_STEP_SP
-                )
-            }
+            updateTextSize(
+                readableTextSizeSp -
+                    TEXT_SIZE_STEP_SP
+            )
+        }
 
 
-        // =====================================================
-        // 핀치 확대
-        // =====================================================
+        increaseButton.setOnClickListener {
+
+            updateTextSize(
+                readableTextSizeSp +
+                    TEXT_SIZE_STEP_SP
+            )
+        }
+
 
         val scaleDetector =
             ScaleGestureDetector(
@@ -3201,16 +3746,13 @@ private fun checkMagnifierTrashZone(
 
 
                     override fun onScale(
-                        detector:
-                            ScaleGestureDetector
+                        detector: ScaleGestureDetector
                     ): Boolean {
 
                         updateTextSize(
                             readableTextSizeSp *
-                                detector
-                                    .scaleFactor
+                                detector.scaleFactor
                         )
-
 
                         return true
                     }
@@ -3218,23 +3760,17 @@ private fun checkMagnifierTrashZone(
             )
 
 
-        scrollView
-            .setOnTouchListener { _, event ->
+        scrollView.setOnTouchListener { _, event ->
 
-                scaleDetector
-                    .onTouchEvent(
-                        event
-                    )
+            scaleDetector.onTouchEvent(
+                event
+            )
 
 
-                event.pointerCount >= 2 ||
-                    scaleDetector.isInProgress
-            }
+            event.pointerCount >= 2 ||
+                scaleDetector.isInProgress
+        }
 
-
-        // =====================================================
-        // 선택적 TTS 버튼
-        // =====================================================
 
         if (
             readButtonText != null &&
@@ -3250,7 +3786,6 @@ private fun checkMagnifierTrashZone(
                     textSize =
                         18f
 
-
                     setOnClickListener {
 
                         onRead()
@@ -3260,16 +3795,13 @@ private fun checkMagnifierTrashZone(
 
             val readParams =
                 LinearLayout.LayoutParams(
-                    LinearLayout
-                        .LayoutParams
-                        .MATCH_PARENT,
+                    LinearLayout.LayoutParams.MATCH_PARENT,
                     dp(58)
                 )
 
 
             readParams.topMargin =
                 dp(8)
-
 
             readParams.bottomMargin =
                 dp(8)
@@ -3291,15 +3823,11 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     17f
 
-
                 setOnClickListener {
 
-                    textToSpeech
-                        ?.stop()
-
+                    textToSpeech?.stop()
 
                     removeResultPanel()
-
 
                     showActionMenu()
                 }
@@ -3309,9 +3837,7 @@ private fun checkMagnifierTrashZone(
         panel.addView(
             backButton,
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(56)
             )
         )
@@ -3321,10 +3847,8 @@ private fun checkMagnifierTrashZone(
             WindowManager.LayoutParams(
                 dp(370),
                 dp(650),
-                WindowManager.LayoutParams
-                    .TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams
-                    .FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
             )
 
@@ -3372,55 +3896,34 @@ private fun checkMagnifierTrashZone(
         textToSpeech =
             TextToSpeech(this) { status ->
 
-
                 if (
                     status ==
                     TextToSpeech.SUCCESS
                 ) {
 
                     val result =
-                        textToSpeech
-                            ?.setLanguage(
-                                Locale.KOREAN
-                            )
+                        textToSpeech?.setLanguage(
+                            Locale.KOREAN
+                        )
 
 
                     isTtsReady =
                         result !=
-                            TextToSpeech
-                                .LANG_MISSING_DATA &&
+                            TextToSpeech.LANG_MISSING_DATA &&
                             result !=
-                            TextToSpeech
-                                .LANG_NOT_SUPPORTED
+                            TextToSpeech.LANG_NOT_SUPPORTED
 
 
                     if (
                         isTtsReady
                     ) {
 
-                        textToSpeech
-                            ?.setSpeechRate(
-                                0.9f
-                            )
-
-
-                        textToSpeech
-                            ?.setPitch(
-                                1.0f
-                            )
-
-
-                        Log.d(
-                            TAG,
-                            "HALO TTS 초기화 성공"
+                        textToSpeech?.setSpeechRate(
+                            0.9f
                         )
 
-
-                    } else {
-
-                        Log.e(
-                            TAG,
-                            "한국어 TTS 사용 불가"
+                        textToSpeech?.setPitch(
+                            1.0f
                         )
                     }
 
@@ -3429,19 +3932,13 @@ private fun checkMagnifierTrashZone(
 
                     isTtsReady =
                         false
-
-
-                    Log.e(
-                        TAG,
-                        "HALO TTS 초기화 실패"
-                    )
                 }
             }
     }
 
 
     // =========================================================
-    // 현재 화면 읽기
+    // 현재 화면 TTS
     // =========================================================
 
     private fun startReadingCurrentScreen() {
@@ -3454,7 +3951,6 @@ private fun checkMagnifierTrashZone(
                 "읽어줘",
                 "현재 화면에서 읽을 수 있는 정보가 없습니다."
             )
-
 
             return
         }
@@ -3469,16 +3965,14 @@ private fun checkMagnifierTrashZone(
                 "음성 읽기 기능을 준비하지 못했습니다.\n\n휴대폰의 TTS 설정을 확인해주세요."
             )
 
-
             return
         }
 
 
         val text =
-            currentScreenLines
-                .joinToString(
-                    ".\n"
-                )
+            currentScreenLines.joinToString(
+                ".\n"
+            )
 
 
         showTtsControlPanel(
@@ -3511,8 +4005,7 @@ private fun checkMagnifierTrashZone(
         }
 
 
-        textToSpeech
-            ?.stop()
+        textToSpeech?.stop()
 
 
         val chunks =
@@ -3521,40 +4014,33 @@ private fun checkMagnifierTrashZone(
             )
 
 
-        chunks
-            .forEachIndexed {
-                index,
-                chunk ->
+        chunks.forEachIndexed { index, chunk ->
+
+            val mode =
+                if (
+                    index == 0
+                ) {
+
+                    TextToSpeech.QUEUE_FLUSH
+
+                } else {
+
+                    TextToSpeech.QUEUE_ADD
+                }
 
 
-                val mode =
-                    if (
-                        index == 0
-                    ) {
-
-                        TextToSpeech
-                            .QUEUE_FLUSH
-
-                    } else {
-
-                        TextToSpeech
-                            .QUEUE_ADD
-                    }
-
-
-                textToSpeech
-                    ?.speak(
-                        chunk,
-                        mode,
-                        null,
-                        "halo_tts_$index"
-                    )
-            }
+            textToSpeech?.speak(
+                chunk,
+                mode,
+                null,
+                "halo_tts_$index"
+            )
+        }
     }
 
 
     // =========================================================
-    // 긴 TTS 텍스트 분할
+    // TTS 긴 문자열 나누기
     // =========================================================
 
     private fun splitTextForTts(
@@ -3606,18 +4092,9 @@ private fun checkMagnifierTrashZone(
 
             var cutIndex =
                 maxOf(
-                    candidate
-                        .lastIndexOf(
-                            '\n'
-                        ),
-                    candidate
-                        .lastIndexOf(
-                            ". "
-                        ),
-                    candidate
-                        .lastIndexOf(
-                            ' '
-                        )
+                    candidate.lastIndexOf('\n'),
+                    candidate.lastIndexOf(". "),
+                    candidate.lastIndexOf(' ')
                 )
 
 
@@ -3632,12 +4109,10 @@ private fun checkMagnifierTrashZone(
 
 
             val chunk =
-                remaining
-                    .substring(
-                        0,
-                        cutIndex
-                    )
-                    .trim()
+                remaining.substring(
+                    0,
+                    cutIndex
+                ).trim()
 
 
             if (
@@ -3651,11 +4126,9 @@ private fun checkMagnifierTrashZone(
 
 
             remaining =
-                remaining
-                    .substring(
-                        cutIndex
-                    )
-                    .trim()
+                remaining.substring(
+                    cutIndex
+                ).trim()
         }
 
 
@@ -3674,7 +4147,7 @@ private fun checkMagnifierTrashZone(
 
 
     // =========================================================
-    // TTS 제어 화면
+    // TTS 제어 패널
     // =========================================================
 
     private fun showTtsControlPanel(
@@ -3691,14 +4164,12 @@ private fun checkMagnifierTrashZone(
                 orientation =
                     LinearLayout.VERTICAL
 
-
                 setPadding(
                     dp(20),
                     dp(20),
                     dp(20),
                     dp(20)
                 )
-
 
                 background =
                     createRoundedBackground(
@@ -3726,7 +4197,6 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     24f
 
-
                 setTextColor(
                     Color.rgb(
                         100,
@@ -3734,7 +4204,6 @@ private fun checkMagnifierTrashZone(
                         255
                     )
                 )
-
 
                 setPadding(
                     0,
@@ -3759,11 +4228,9 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     30f
 
-
                 setTextColor(
                     Color.WHITE
                 )
-
 
                 setLineSpacing(
                     dp(8).toFloat(),
@@ -3775,9 +4242,7 @@ private fun checkMagnifierTrashZone(
         panel.addView(
             status,
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
                 1f
             )
@@ -3793,12 +4258,10 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     18f
 
-
                 setOnClickListener {
 
                     status.text =
                         "처음부터 다시 읽고 있습니다."
-
 
                     speakText(
                         textToRead
@@ -3809,9 +4272,7 @@ private fun checkMagnifierTrashZone(
 
         val replayParams =
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(58)
             )
 
@@ -3835,12 +4296,9 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     18f
 
-
                 setOnClickListener {
 
-                    textToSpeech
-                        ?.stop()
-
+                    textToSpeech?.stop()
 
                     status.text =
                         "읽기를 중지했습니다."
@@ -3850,9 +4308,7 @@ private fun checkMagnifierTrashZone(
 
         val stopParams =
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(58)
             )
 
@@ -3876,15 +4332,11 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     17f
 
-
                 setOnClickListener {
 
-                    textToSpeech
-                        ?.stop()
-
+                    textToSpeech?.stop()
 
                     removeResultPanel()
-
 
                     showActionMenu()
                 }
@@ -3894,9 +4346,7 @@ private fun checkMagnifierTrashZone(
         panel.addView(
             backButton,
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(58)
             )
         )
@@ -3906,10 +4356,8 @@ private fun checkMagnifierTrashZone(
             WindowManager.LayoutParams(
                 dp(360),
                 dp(430),
-                WindowManager.LayoutParams
-                    .TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams
-                    .FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
             )
 
@@ -3955,10 +4403,9 @@ private fun checkMagnifierTrashZone(
 
 
         if (
-            !SpeechRecognizer
-                .isRecognitionAvailable(
-                    this
-                )
+            !SpeechRecognizer.isRecognitionAvailable(
+                this
+            )
         ) {
 
             Log.e(
@@ -3966,175 +4413,141 @@ private fun checkMagnifierTrashZone(
                 "SpeechRecognizer 사용 불가"
             )
 
-
             return
         }
 
 
         speechRecognizer =
-            SpeechRecognizer
-                .createSpeechRecognizer(
-                    this
-                )
+            SpeechRecognizer.createSpeechRecognizer(
+                this
+            )
 
 
-        speechRecognizer
-            ?.setRecognitionListener(
+        speechRecognizer?.setRecognitionListener(
 
-                object :
-                    RecognitionListener {
+            object :
+                RecognitionListener {
 
 
-                    override fun onReadyForSpeech(
-                        params: Bundle?
-                    ) {
+                override fun onReadyForSpeech(
+                    params: Bundle?
+                ) {
+                }
 
-                        Log.d(
-                            TAG,
-                            "질문 음성 인식 준비"
+
+                override fun onBeginningOfSpeech() {
+                }
+
+
+                override fun onRmsChanged(
+                    rmsdB: Float
+                ) {
+                }
+
+
+                override fun onBufferReceived(
+                    buffer: ByteArray?
+                ) {
+                }
+
+
+                override fun onEndOfSpeech() {
+                }
+
+
+                override fun onError(
+                    error: Int
+                ) {
+
+                    isListeningForQuestion =
+                        false
+
+
+                    mainHandler.post {
+
+                        showMessagePanel(
+                            "질문하기",
+                            "질문을 인식하지 못했습니다.\n\n다시 질문하기를 눌러주세요."
                         )
-                    }
-
-
-                    override fun onBeginningOfSpeech() {
-
-                        Log.d(
-                            TAG,
-                            "질문 음성 입력 시작"
-                        )
-                    }
-
-
-                    override fun onRmsChanged(
-                        rmsdB: Float
-                    ) {
-                    }
-
-
-                    override fun onBufferReceived(
-                        buffer: ByteArray?
-                    ) {
-                    }
-
-
-                    override fun onEndOfSpeech() {
-
-                        Log.d(
-                            TAG,
-                            "질문 음성 입력 종료"
-                        )
-                    }
-
-
-                    override fun onError(
-                        error: Int
-                    ) {
-
-                        isListeningForQuestion =
-                            false
-
-
-                        Log.e(
-                            TAG,
-                            "음성 인식 오류: $error"
-                        )
-
-
-                        mainHandler.post {
-
-                            showMessagePanel(
-                                "질문하기",
-                                "질문을 인식하지 못했습니다.\n\n다시 질문하기를 눌러주세요."
-                            )
-                        }
-                    }
-
-
-                    override fun onResults(
-                        results: Bundle?
-                    ) {
-
-                        isListeningForQuestion =
-                            false
-
-
-                        val matches =
-                            results
-                                ?.getStringArrayList(
-                                    SpeechRecognizer
-                                        .RESULTS_RECOGNITION
-                                )
-
-
-                        val question =
-                            matches
-                                ?.firstOrNull()
-                                ?.trim()
-
-
-                        if (
-                            question
-                                .isNullOrEmpty()
-                        ) {
-
-                            mainHandler.post {
-
-                                showMessagePanel(
-                                    "질문하기",
-                                    "질문을 인식하지 못했습니다."
-                                )
-                            }
-
-
-                            return
-                        }
-
-
-                        Log.d(
-                            TAG,
-                            "인식된 질문: $question"
-                        )
-
-
-                        mainHandler.post {
-
-                            showMessagePanel(
-                                "질문하기",
-                                "질문\n\n$question\n\n답변을 분석하고 있습니다..."
-                            )
-                        }
-
-
-                        requestScreenQuestion(
-                            question
-                        )
-                    }
-
-
-                    override fun onPartialResults(
-                        partialResults: Bundle?
-                    ) {
-                    }
-
-
-                    override fun onEvent(
-                        eventType: Int,
-                        params: Bundle?
-                    ) {
                     }
                 }
-            )
+
+
+                override fun onResults(
+                    results: Bundle?
+                ) {
+
+                    isListeningForQuestion =
+                        false
+
+
+                    val matches =
+                        results?.getStringArrayList(
+                            SpeechRecognizer
+                                .RESULTS_RECOGNITION
+                        )
+
+
+                    val question =
+                        matches
+                            ?.firstOrNull()
+                            ?.trim()
+
+
+                    if (
+                        question.isNullOrEmpty()
+                    ) {
+
+                        mainHandler.post {
+
+                            showMessagePanel(
+                                "질문하기",
+                                "질문을 인식하지 못했습니다."
+                            )
+                        }
+
+                        return
+                    }
+
+
+                    mainHandler.post {
+
+                        showMessagePanel(
+                            "질문하기",
+                            "질문\n\n$question\n\n답변을 분석하고 있습니다..."
+                        )
+                    }
+
+
+                    requestScreenQuestion(
+                        question
+                    )
+                }
+
+
+                override fun onPartialResults(
+                    partialResults: Bundle?
+                ) {
+                }
+
+
+                override fun onEvent(
+                    eventType: Int,
+                    params: Bundle?
+                ) {
+                }
+            }
+        )
     }
 
 
     // =========================================================
-    // 질문 음성 입력 시작
+    // 질문 듣기 시작
     // =========================================================
 
     private fun startQuestionListening() {
 
-        textToSpeech
-            ?.stop()
+        textToSpeech?.stop()
 
 
         if (
@@ -4146,18 +4559,15 @@ private fun checkMagnifierTrashZone(
                 "현재 화면에서 읽을 수 있는 정보가 없습니다."
             )
 
-
             return
         }
 
 
         if (
             checkSelfPermission(
-                Manifest.permission
-                    .RECORD_AUDIO
+                Manifest.permission.RECORD_AUDIO
             ) !=
-            PackageManager
-                .PERMISSION_GRANTED
+            PackageManager.PERMISSION_GRANTED
         ) {
 
             showMessagePanel(
@@ -4165,14 +4575,12 @@ private fun checkMagnifierTrashZone(
                 "마이크 권한이 필요합니다.\n\nHaloVision 앱 설정에서 마이크 권한을 허용해주세요."
             )
 
-
             return
         }
 
 
         if (
-            speechRecognizer ==
-            null
+            speechRecognizer == null
         ) {
 
             initializeSpeechRecognizer()
@@ -4180,15 +4588,13 @@ private fun checkMagnifierTrashZone(
 
 
         if (
-            speechRecognizer ==
-            null
+            speechRecognizer == null
         ) {
 
             showMessagePanel(
                 "질문하기",
                 "이 기기에서 음성 인식을 사용할 수 없습니다."
             )
-
 
             return
         }
@@ -4198,9 +4604,7 @@ private fun checkMagnifierTrashZone(
             isListeningForQuestion
         ) {
 
-            speechRecognizer
-                ?.cancel()
-
+            speechRecognizer?.cancel()
 
             isListeningForQuestion =
                 false
@@ -4218,43 +4622,31 @@ private fun checkMagnifierTrashZone(
 
         val intent =
             Intent(
-                RecognizerIntent
-                    .ACTION_RECOGNIZE_SPEECH
+                RecognizerIntent.ACTION_RECOGNIZE_SPEECH
             ).apply {
 
-
                 putExtra(
-                    RecognizerIntent
-                        .EXTRA_LANGUAGE_MODEL,
-                    RecognizerIntent
-                        .LANGUAGE_MODEL_FREE_FORM
+                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
                 )
 
-
                 putExtra(
-                    RecognizerIntent
-                        .EXTRA_LANGUAGE,
+                    RecognizerIntent.EXTRA_LANGUAGE,
                     "ko-KR"
                 )
 
-
                 putExtra(
-                    RecognizerIntent
-                        .EXTRA_LANGUAGE_PREFERENCE,
+                    RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE,
                     "ko-KR"
                 )
 
-
                 putExtra(
-                    RecognizerIntent
-                        .EXTRA_PARTIAL_RESULTS,
+                    RecognizerIntent.EXTRA_PARTIAL_RESULTS,
                     false
                 )
 
-
                 putExtra(
-                    RecognizerIntent
-                        .EXTRA_MAX_RESULTS,
+                    RecognizerIntent.EXTRA_MAX_RESULTS,
                     1
                 )
             }
@@ -4264,15 +4656,14 @@ private fun checkMagnifierTrashZone(
             true
 
 
-        speechRecognizer
-            ?.startListening(
-                intent
-            )
+        speechRecognizer?.startListening(
+            intent
+        )
     }
 
 
     // =========================================================
-    // 질문 → FastAPI → GPT
+    // 질문 API
     // =========================================================
 
     private fun requestScreenQuestion(
@@ -4280,10 +4671,9 @@ private fun checkMagnifierTrashZone(
     ) {
 
         val screenText =
-            currentScreenLines
-                .joinToString(
-                    "\n"
-                )
+            currentScreenLines.joinToString(
+                "\n"
+            )
 
 
         Thread {
@@ -4308,24 +4698,20 @@ private fun checkMagnifierTrashZone(
                 connection.requestMethod =
                     "POST"
 
-
                 connection.connectTimeout =
                     10000
 
-
                 connection.readTimeout =
                     30000
-
 
                 connection.doOutput =
                     true
 
 
-                connection
-                    .setRequestProperty(
-                        "Content-Type",
-                        "application/json; charset=UTF-8"
-                    )
+                connection.setRequestProperty(
+                    "Content-Type",
+                    "application/json; charset=UTF-8"
+                )
 
 
                 val requestJson =
@@ -4336,7 +4722,6 @@ private fun checkMagnifierTrashZone(
                             screenText
                         )
 
-
                         put(
                             "question",
                             question
@@ -4344,26 +4729,22 @@ private fun checkMagnifierTrashZone(
                     }
 
 
-                connection
-                    .outputStream
-                    .use { output ->
+                connection.outputStream.use { output ->
 
-                        output.write(
-                            requestJson
-                                .toString()
-                                .toByteArray(
-                                    Charsets.UTF_8
-                                )
-                        )
+                    output.write(
+                        requestJson
+                            .toString()
+                            .toByteArray(
+                                Charsets.UTF_8
+                            )
+                    )
 
-
-                        output.flush()
-                    }
+                    output.flush()
+                }
 
 
                 val responseCode =
-                    connection
-                        .responseCode
+                    connection.responseCode
 
 
                 val stream =
@@ -4372,13 +4753,11 @@ private fun checkMagnifierTrashZone(
                         200..299
                     ) {
 
-                        connection
-                            .inputStream
+                        connection.inputStream
 
                     } else {
 
-                        connection
-                            .errorStream
+                        connection.errorStream
                     }
 
 
@@ -4391,12 +4770,6 @@ private fun checkMagnifierTrashZone(
                             it.readText()
                         }
                         ?: ""
-
-
-                Log.d(
-                    TAG,
-                    "질문 API 응답: $responseText"
-                )
 
 
                 if (
@@ -4428,14 +4801,13 @@ private fun checkMagnifierTrashZone(
                         )
 
 
-                        // 질문 답변 자동 읽기
                         if (
-                               isTtsReady &&
-                                autoReadQuestionAnswer
-                            ) {
+                            isTtsReady &&
+                            autoReadQuestionAnswer
+                        ) {
 
-                                speakText(
-                                    answer
+                            speakText(
+                                answer
                             )
                         }
                     }
@@ -4473,8 +4845,7 @@ private fun checkMagnifierTrashZone(
 
             } finally {
 
-                connection
-                    ?.disconnect()
+                connection?.disconnect()
             }
 
         }.start()
@@ -4482,7 +4853,7 @@ private fun checkMagnifierTrashZone(
 
 
     // =========================================================
-    // 질문 답변 전용 화면
+    // 질문 답변 화면
     // =========================================================
 
     private fun showQuestionAnswerPanel(
@@ -4493,12 +4864,16 @@ private fun checkMagnifierTrashZone(
         removeResultPanel()
 
 
+        // Vision Profile 기본 크기로 시작
+        readableTextSizeSp =
+            profileTextSizeSp
+
+
         val panel =
             LinearLayout(this).apply {
 
                 orientation =
                     LinearLayout.VERTICAL
-
 
                 setPadding(
                     dp(18),
@@ -4506,7 +4881,6 @@ private fun checkMagnifierTrashZone(
                     dp(18),
                     dp(18)
                 )
-
 
                 background =
                     createRoundedBackground(
@@ -4545,7 +4919,6 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     23f
 
-
                 setTextColor(
                     Color.rgb(
                         100,
@@ -4560,9 +4933,7 @@ private fun checkMagnifierTrashZone(
             title,
             LinearLayout.LayoutParams(
                 0,
-                LinearLayout
-                    .LayoutParams
-                    .WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
                 1f
             )
         )
@@ -4580,11 +4951,9 @@ private fun checkMagnifierTrashZone(
                 gravity =
                     Gravity.CENTER
 
-
                 setTextColor(
                     Color.WHITE
                 )
-
 
                 setPadding(
                     dp(10),
@@ -4592,7 +4961,6 @@ private fun checkMagnifierTrashZone(
                     dp(10),
                     dp(6)
                 )
-
 
                 background =
                     createRoundedBackground(
@@ -4630,11 +4998,9 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     17f
 
-
                 setTextColor(
                     Color.LTGRAY
                 )
-
 
                 setPadding(
                     0,
@@ -4649,10 +5015,6 @@ private fun checkMagnifierTrashZone(
             questionView
         )
 
-
-        // =====================================================
-        // 크기 버튼
-        // =====================================================
 
         val zoomRow =
             LinearLayout(this).apply {
@@ -4770,9 +5132,7 @@ private fun checkMagnifierTrashZone(
         panel.addView(
             scrollView,
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
                 1f
             )
@@ -4784,19 +5144,16 @@ private fun checkMagnifierTrashZone(
         ) {
 
             readableTextSizeSp =
-                newSize
-                    .coerceIn(
-                        MIN_TEXT_SIZE_SP,
-                        MAX_TEXT_SIZE_SP
-                    )
-
-
-            answerView
-                .setTextSize(
-                    TypedValue
-                        .COMPLEX_UNIT_SP,
-                    readableTextSizeSp
+                newSize.coerceIn(
+                    MIN_TEXT_SIZE_SP,
+                    MAX_TEXT_SIZE_SP
                 )
+
+
+            answerView.setTextSize(
+                TypedValue.COMPLEX_UNIT_SP,
+                readableTextSizeSp
+            )
 
 
             sizeLabel.text =
@@ -4804,29 +5161,23 @@ private fun checkMagnifierTrashZone(
         }
 
 
-        decreaseButton
-            .setOnClickListener {
+        decreaseButton.setOnClickListener {
 
-                updateAnswerSize(
-                    readableTextSizeSp -
-                        TEXT_SIZE_STEP_SP
-                )
-            }
-
-
-        increaseButton
-            .setOnClickListener {
-
-                updateAnswerSize(
-                    readableTextSizeSp +
-                        TEXT_SIZE_STEP_SP
-                )
-            }
+            updateAnswerSize(
+                readableTextSizeSp -
+                    TEXT_SIZE_STEP_SP
+            )
+        }
 
 
-        // =====================================================
-        // 핀치 확대
-        // =====================================================
+        increaseButton.setOnClickListener {
+
+            updateAnswerSize(
+                readableTextSizeSp +
+                    TEXT_SIZE_STEP_SP
+            )
+        }
+
 
         val scaleDetector =
             ScaleGestureDetector(
@@ -4837,8 +5188,7 @@ private fun checkMagnifierTrashZone(
 
 
                     override fun onScale(
-                        detector:
-                            ScaleGestureDetector
+                        detector: ScaleGestureDetector
                     ): Boolean {
 
                         updateAnswerSize(
@@ -4846,30 +5196,22 @@ private fun checkMagnifierTrashZone(
                                 detector.scaleFactor
                         )
 
-
                         return true
                     }
                 }
             )
 
 
-        scrollView
-            .setOnTouchListener { _, event ->
+        scrollView.setOnTouchListener { _, event ->
 
-                scaleDetector
-                    .onTouchEvent(
-                        event
-                    )
+            scaleDetector.onTouchEvent(
+                event
+            )
 
+            event.pointerCount >= 2 ||
+                scaleDetector.isInProgress
+        }
 
-                event.pointerCount >= 2 ||
-                    scaleDetector.isInProgress
-            }
-
-
-        // =====================================================
-        // 답변 다시 듣기
-        // =====================================================
 
         val replayAnswerButton =
             Button(this).apply {
@@ -4880,7 +5222,6 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     18f
 
-
                 setOnClickListener {
 
                     if (
@@ -4890,7 +5231,6 @@ private fun checkMagnifierTrashZone(
                         speakText(
                             answer
                         )
-
 
                     } else {
 
@@ -4905,16 +5245,13 @@ private fun checkMagnifierTrashZone(
 
         val replayParams =
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(58)
             )
 
 
         replayParams.topMargin =
             dp(8)
-
 
         replayParams.bottomMargin =
             dp(8)
@@ -4926,10 +5263,6 @@ private fun checkMagnifierTrashZone(
         )
 
 
-        // =====================================================
-        // 다시 질문하기
-        // =====================================================
-
         val askAgainButton =
             Button(this).apply {
 
@@ -4939,17 +5272,12 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     18f
 
-
                 setOnClickListener {
 
-                    textToSpeech
-                        ?.stop()
-
+                    textToSpeech?.stop()
 
                     removeResultPanel()
 
-
-                    // 기존 currentScreenLines 유지
                     startQuestionListening()
                 }
             }
@@ -4957,9 +5285,7 @@ private fun checkMagnifierTrashZone(
 
         val askAgainParams =
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(58)
             )
 
@@ -4983,15 +5309,11 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     17f
 
-
                 setOnClickListener {
 
-                    textToSpeech
-                        ?.stop()
-
+                    textToSpeech?.stop()
 
                     removeResultPanel()
-
 
                     showActionMenu()
                 }
@@ -5001,9 +5323,7 @@ private fun checkMagnifierTrashZone(
         panel.addView(
             backButton,
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(56)
             )
         )
@@ -5013,10 +5333,8 @@ private fun checkMagnifierTrashZone(
             WindowManager.LayoutParams(
                 dp(370),
                 dp(650),
-                WindowManager.LayoutParams
-                    .TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams
-                    .FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
             )
 
@@ -5049,7 +5367,7 @@ private fun checkMagnifierTrashZone(
 
 
     // =========================================================
-    // 일반 메시지 화면
+    // 일반 메시지 패널
     // =========================================================
 
     private fun showMessagePanel(
@@ -5066,14 +5384,12 @@ private fun checkMagnifierTrashZone(
                 orientation =
                     LinearLayout.VERTICAL
 
-
                 setPadding(
                     dp(20),
                     dp(20),
                     dp(20),
                     dp(20)
                 )
-
 
                 background =
                     createRoundedBackground(
@@ -5101,7 +5417,6 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     23f
 
-
                 setTextColor(
                     Color.rgb(
                         100,
@@ -5109,7 +5424,6 @@ private fun checkMagnifierTrashZone(
                         255
                     )
                 )
-
 
                 setPadding(
                     0,
@@ -5134,11 +5448,9 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     18f
 
-
                 setTextColor(
                     Color.WHITE
                 )
-
 
                 setLineSpacing(
                     dp(5).toFloat(),
@@ -5150,9 +5462,7 @@ private fun checkMagnifierTrashZone(
         panel.addView(
             messageView,
             LinearLayout.LayoutParams(
-                LinearLayout
-                    .LayoutParams
-                    .MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
                 1f
             )
@@ -5168,16 +5478,13 @@ private fun checkMagnifierTrashZone(
                 textSize =
                     17f
 
-
                 setOnClickListener {
 
                     if (
                         isListeningForQuestion
                     ) {
 
-                        speechRecognizer
-                            ?.cancel()
-
+                        speechRecognizer?.cancel()
 
                         isListeningForQuestion =
                             false
@@ -5185,7 +5492,6 @@ private fun checkMagnifierTrashZone(
 
 
                     removeResultPanel()
-
 
                     showActionMenu()
                 }
@@ -5201,10 +5507,8 @@ private fun checkMagnifierTrashZone(
             WindowManager.LayoutParams(
                 dp(350),
                 dp(360),
-                WindowManager.LayoutParams
-                    .TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams
-                    .FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
             )
 
@@ -5237,23 +5541,22 @@ private fun checkMagnifierTrashZone(
 
 
     // =========================================================
-    // 메뉴 제거
+    // Overlay 제거
     // =========================================================
 
     private fun removeActionMenu() {
 
-        actionMenu
-            ?.let { view ->
+        actionMenu?.let { view ->
 
-                try {
+            try {
 
-                    windowManager.removeView(
-                        view
-                    )
+                windowManager.removeView(
+                    view
+                )
 
-                } catch (_: Exception) {
-                }
+            } catch (_: Exception) {
             }
+        }
 
 
         actionMenu =
@@ -5261,24 +5564,19 @@ private fun checkMagnifierTrashZone(
     }
 
 
-    // =========================================================
-    // 결과 패널 제거
-    // =========================================================
-
     private fun removeResultPanel() {
 
-        resultPanel
-            ?.let { view ->
+        resultPanel?.let { view ->
 
-                try {
+            try {
 
-                    windowManager.removeView(
-                        view
-                    )
+                windowManager.removeView(
+                    view
+                )
 
-                } catch (_: Exception) {
-                }
+            } catch (_: Exception) {
             }
+        }
 
 
         resultPanel =
@@ -5296,29 +5594,28 @@ private fun checkMagnifierTrashZone(
         radiusDp: Int
     ): GradientDrawable {
 
-        return GradientDrawable()
-            .apply {
+        return GradientDrawable().apply {
 
-                shape =
-                    GradientDrawable.RECTANGLE
-
-
-                cornerRadius =
-                    dp(
-                        radiusDp
-                    ).toFloat()
+            shape =
+                GradientDrawable.RECTANGLE
 
 
-                setColor(
-                    backgroundColor
-                )
+            cornerRadius =
+                dp(
+                    radiusDp
+                ).toFloat()
 
 
-                setStroke(
-                    dp(2),
-                    borderColor
-                )
-            }
+            setColor(
+                backgroundColor
+            )
+
+
+            setStroke(
+                dp(2),
+                borderColor
+            )
+        }
     }
 
 
