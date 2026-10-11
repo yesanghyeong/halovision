@@ -72,7 +72,7 @@ class HaloAccessibilityService : AccessibilityService() {
         private const val OCR_MAX_PIXELS = 9_000_000f
         private const val OCR_CONTRAST = 1.35f
 
-        private const val SERVER_BASE_URL = "http://127.0.0.1:8000"
+        private const val SERVER_BASE_URL = "https://halovision.onrender.com"
 
         private const val VISION_PROFILE_PREFS = "halo_vision_profile"
         private const val KEY_PROFILE_TEXT_SIZE = "profile_text_size"
