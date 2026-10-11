@@ -79,6 +79,61 @@ class HaloAccessibilityService : AccessibilityService() {
         private const val KEY_PROFILE_MAGNIFIER_SCALE = "profile_magnifier_scale"
         private const val KEY_AUTO_READ_QUESTION = "auto_read_question"
         private const val KEY_AUTO_READ_IMPORTANT = "auto_read_important"
+
+        private const val KEY_HALO_RUNNING = "halo_runtime_enabled"
+
+        private var activeInstance: HaloAccessibilityService? = null
+
+        fun isHaloRunningPreference(
+            context: android.content.Context
+        ): Boolean {
+            return context
+                .getSharedPreferences(
+                    VISION_PROFILE_PREFS,
+                    android.content.Context.MODE_PRIVATE
+                )
+                .getBoolean(
+                    KEY_HALO_RUNNING,
+                    true
+                )
+        }
+
+        fun setHaloRunningFromApp(
+            context: android.content.Context,
+            enabled: Boolean
+        ): Boolean {
+            context
+                .getSharedPreferences(
+                    VISION_PROFILE_PREFS,
+                    android.content.Context.MODE_PRIVATE
+                )
+                .edit()
+                .putBoolean(
+                    KEY_HALO_RUNNING,
+                    enabled
+                )
+                .apply()
+
+            val service =
+                activeInstance
+
+            if (
+                service != null
+            ) {
+                service.mainHandler.post {
+                    service.applyHaloRunningState(
+                        enabled
+                    )
+                }
+            }
+
+            /*
+             * 설정값 저장 자체는 성공.
+             * 접근성 권한이 켜져 있다면 서비스가 연결된 뒤에도
+             * 이 값을 읽어 같은 상태를 유지한다.
+             */
+            return true
+        }
     }
 
     private lateinit var windowManager: WindowManager
@@ -109,6 +164,9 @@ class HaloAccessibilityService : AccessibilityService() {
 
     private var currentScreenLines: List<String> = emptyList()
     private var currentScreenNodes: List<HaloScreenNode> = emptyList()
+
+    // 접근성 권한은 유지하되 HALO 기능 자체의 실행 여부를 제어한다.
+    private var isHaloRuntimeEnabled: Boolean = true
 
     private var targetHighlightView: View? = null
     private var targetHighlightLabelView: TextView? = null
@@ -165,16 +223,35 @@ class HaloAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+
+        activeInstance =
+            this
+
         Log.d(TAG, "Halo AccessibilityService 연결됨")
 
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
         loadVisionProfile()
-        initializeTextToSpeech()
-        initializeLocalTextRecognizer()
-        initializeSpeechRecognizer()
-        initializeMagnificationListener()
-        showFloatingHaloButton()
+
+        isHaloRuntimeEnabled =
+            isHaloRunningPreference(
+                this
+            )
+
+        if (
+            isHaloRuntimeEnabled
+        ) {
+            initializeTextToSpeech()
+            initializeLocalTextRecognizer()
+            initializeSpeechRecognizer()
+            initializeMagnificationListener()
+            showFloatingHaloButton()
+        } else {
+            Log.d(
+                TAG,
+                "HaloVision 기능 꺼짐 상태로 서비스 연결됨"
+            )
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -186,6 +263,14 @@ class HaloAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        if (
+            activeInstance ===
+            this
+        ) {
+            activeInstance =
+                null
+        }
+
         mainHandler.removeCallbacks(magnifierDismissRunnable)
         mainHandler.removeCallbacks(targetHighlightHideRunnable)
         removeTargetHighlight()
@@ -201,12 +286,7 @@ class HaloAccessibilityService : AccessibilityService() {
         removeActionMenu()
         removeResultPanel()
 
-        floatingButton?.let {
-            try {
-                if (::windowManager.isInitialized) windowManager.removeView(it)
-            } catch (_: Exception) {}
-        }
-        floatingButton = null
+        removeFloatingHaloButton()
 
         textToSpeech?.stop()
         textToSpeech?.shutdown()
@@ -269,7 +349,135 @@ class HaloAccessibilityService : AccessibilityService() {
         readableTextSizeSp = safeTextSize
     }
 
+    // =========================================================
+    // 앱 메인 화면에서 HALO 기능 ON / OFF
+    //
+    // OFF:
+    // - 접근성 권한 자체는 유지
+    // - HALO 버튼 제거
+    // - 열려 있는 HALO UI 제거
+    // - TTS / 음성 인식 중지
+    // - 현재 화면 문맥 폐기
+    //
+    // ON:
+    // - 필요한 런타임 구성요소 확인
+    // - HALO 버튼 즉시 다시 표시
+    // =========================================================
+
+    private fun applyHaloRunningState(
+        enabled: Boolean
+    ) {
+        isHaloRuntimeEnabled =
+            enabled
+
+        getSharedPreferences(
+            VISION_PROFILE_PREFS,
+            MODE_PRIVATE
+        )
+            .edit()
+            .putBoolean(
+                KEY_HALO_RUNNING,
+                enabled
+            )
+            .apply()
+
+        if (
+            enabled
+        ) {
+            loadVisionProfile()
+            initializeTextToSpeech()
+            initializeLocalTextRecognizer()
+            initializeSpeechRecognizer()
+            initializeMagnificationListener()
+
+            showFloatingHaloButton()
+
+            Log.d(
+                TAG,
+                "HALO_RUNTIME | enabled=true"
+            )
+
+            return
+        }
+
+        /*
+         * 기능 OFF 상태에서는 사용자가 명시적으로 다시 켜기 전까지
+         * 화면 분석 / OCR / Screenshot / GPT 요청으로 들어갈 UI가 없다.
+         */
+        textToSpeech
+            ?.stop()
+
+        if (
+            isListeningForQuestion
+        ) {
+            speechRecognizer
+                ?.cancel()
+
+            isListeningForQuestion =
+                false
+        }
+
+        mainHandler.removeCallbacks(
+            magnifierDismissRunnable
+        )
+
+        mainHandler.removeCallbacks(
+            targetHighlightHideRunnable
+        )
+
+        removeTargetHighlight()
+        hideMagnifierTrashZone()
+
+        if (
+            isHaloWindowMagnifierActive
+        ) {
+            stopWindowMagnifier()
+        }
+
+        removeActionMenu()
+        removeResultPanel()
+        removeFloatingHaloButton()
+
+        currentScreenLines =
+            emptyList()
+
+        currentScreenNodes =
+            emptyList()
+
+        Log.d(
+            TAG,
+            "HALO_RUNTIME | enabled=false"
+        )
+    }
+
+    private fun removeFloatingHaloButton() {
+        floatingButton
+            ?.let { button ->
+                try {
+                    if (
+                        ::windowManager.isInitialized
+                    ) {
+                        windowManager.removeView(
+                            button
+                        )
+                    }
+                } catch (
+                    _: Exception
+                ) {
+                }
+            }
+
+        floatingButton =
+            null
+    }
+
     private fun showFloatingHaloButton() {
+        if (
+            !isHaloRuntimeEnabled
+        ) {
+            return
+        }
+
         if (floatingButton != null) return
 
         val button = TextView(this).apply {
@@ -346,6 +554,12 @@ class HaloAccessibilityService : AccessibilityService() {
     }
 
     private fun onHaloButtonClicked() {
+        if (
+            !isHaloRuntimeEnabled
+        ) {
+            return
+        }
+
         textToSpeech?.stop()
         removeTargetHighlight()
 
