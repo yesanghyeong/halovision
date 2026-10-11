@@ -1,9 +1,11 @@
 package com.example.halovision_app
 
+import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityManager
@@ -22,7 +24,13 @@ class MainActivity : FlutterActivity() {
 
         private const val ACTION_ACCESSIBILITY_DETAILS_SETTINGS =
             "android.settings.ACCESSIBILITY_DETAILS_SETTINGS"
+
+        private const val REQUEST_RECORD_AUDIO =
+            4101
     }
+
+    private var pendingMicrophonePermissionResult:
+        MethodChannel.Result? = null
 
     override fun configureFlutterEngine(
         flutterEngine: FlutterEngine
@@ -43,6 +51,18 @@ class MainActivity : FlutterActivity() {
                 "isAccessibilityServiceEnabled" -> {
                     result.success(
                         isHaloAccessibilityServiceEnabled()
+                    )
+                }
+
+                "isMicrophonePermissionGranted" -> {
+                    result.success(
+                        isMicrophonePermissionGranted()
+                    )
+                }
+
+                "requestMicrophonePermission" -> {
+                    requestMicrophonePermission(
+                        result
                     )
                 }
 
@@ -73,9 +93,6 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
 
-                    /*
-                     * 접근성 권한이 없는 상태에서 HALO 기능만 켜는 것은 불가능.
-                     */
                     if (
                         enabled &&
                         !isHaloAccessibilityServiceEnabled()
@@ -117,6 +134,40 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                "openAppSettings" -> {
+                    try {
+                        val intent =
+                            Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+                            ).apply {
+                                data =
+                                    android.net.Uri.parse(
+                                        "package:$packageName"
+                                    )
+
+                                addFlags(
+                                    Intent.FLAG_ACTIVITY_NEW_TASK
+                                )
+                            }
+
+                        startActivity(
+                            intent
+                        )
+
+                        result.success(
+                            null
+                        )
+                    } catch (
+                        e: Exception
+                    ) {
+                        result.error(
+                            "OPEN_APP_SETTINGS_FAILED",
+                            e.message,
+                            null
+                        )
+                    }
+                }
+
                 else -> {
                     result.notImplemented()
                 }
@@ -125,11 +176,88 @@ class MainActivity : FlutterActivity() {
     }
 
     // =========================================================
-    // HaloVision 접근성 서비스 설정 화면
+    // 마이크 권한
     //
-    // 기기가 상세 화면 직접 진입을 허용하면 시도하고,
-    // Samsung One UI 등에서 제한되면 설치된 접근성 앱 화면으로
-    // 자동 fallback 된다.
+    // 접근성 서비스 자체에서는 Android 런타임 권한 팝업을 띄울 수
+    // 없으므로 Activity에서 요청한다.
+    // =========================================================
+
+    private fun isMicrophonePermissionGranted(): Boolean {
+        return checkSelfPermission(
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestMicrophonePermission(
+        result: MethodChannel.Result
+    ) {
+        if (
+            isMicrophonePermissionGranted()
+        ) {
+            result.success(
+                true
+            )
+
+            return
+        }
+
+        if (
+            pendingMicrophonePermissionResult != null
+        ) {
+            result.error(
+                "PERMISSION_REQUEST_IN_PROGRESS",
+                "마이크 권한 요청이 이미 진행 중입니다.",
+                null
+            )
+
+            return
+        }
+
+        pendingMicrophonePermissionResult =
+            result
+
+        requestPermissions(
+            arrayOf(
+                Manifest.permission.RECORD_AUDIO
+            ),
+            REQUEST_RECORD_AUDIO
+        )
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(
+            requestCode,
+            permissions,
+            grantResults
+        )
+
+        if (
+            requestCode !=
+                REQUEST_RECORD_AUDIO
+        ) {
+            return
+        }
+
+        val granted =
+            grantResults.isNotEmpty() &&
+                grantResults[0] ==
+                    PackageManager.PERMISSION_GRANTED
+
+        pendingMicrophonePermissionResult
+            ?.success(
+                granted
+            )
+
+        pendingMicrophonePermissionResult =
+            null
+    }
+
+    // =========================================================
+    // HaloVision 접근성 서비스 설정 화면
     // =========================================================
 
     private fun openHaloAccessibilitySettings() {

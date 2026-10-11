@@ -34,6 +34,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.WindowInsets
 import android.view.accessibility.AccessibilityEvent
@@ -79,6 +80,7 @@ class HaloAccessibilityService : AccessibilityService() {
         private const val KEY_PROFILE_MAGNIFIER_SCALE = "profile_magnifier_scale"
         private const val KEY_AUTO_READ_QUESTION = "auto_read_question"
         private const val KEY_AUTO_READ_IMPORTANT = "auto_read_important"
+        private const val KEY_TTS_SPEECH_RATE = "tts_speech_rate"
 
         private const val KEY_HALO_RUNNING = "halo_runtime_enabled"
 
@@ -177,6 +179,7 @@ class HaloAccessibilityService : AccessibilityService() {
     private var profileMagnifierScale = DEFAULT_MAGNIFIER_SCALE
     private var autoReadQuestionAnswer = true
     private var autoReadImportantResult = false
+    private var ttsSpeechRate = 0.9f
     private var readableTextSizeSp = DEFAULT_TEXT_SIZE_SP
 
     private var textToSpeech: TextToSpeech? = null
@@ -322,6 +325,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
         autoReadQuestionAnswer = prefs.getBoolean(KEY_AUTO_READ_QUESTION, true)
         autoReadImportantResult = prefs.getBoolean(KEY_AUTO_READ_IMPORTANT, false)
+        ttsSpeechRate = prefs.getFloat(KEY_TTS_SPEECH_RATE, 0.9f).coerceIn(0.6f, 1.4f)
         readableTextSizeSp = profileTextSizeSp
     }
 
@@ -347,6 +351,50 @@ class HaloAccessibilityService : AccessibilityService() {
         autoReadQuestionAnswer = readQuestionAutomatically
         autoReadImportantResult = readImportantAutomatically
         readableTextSizeSp = safeTextSize
+    }
+
+    private fun saveTtsSpeechRate(
+        rate: Float
+    ) {
+        val safeRate =
+            rate.coerceIn(
+                0.6f,
+                1.4f
+            )
+
+        getSharedPreferences(
+            VISION_PROFILE_PREFS,
+            MODE_PRIVATE
+        )
+            .edit()
+            .putFloat(
+                KEY_TTS_SPEECH_RATE,
+                safeRate
+            )
+            .apply()
+
+        ttsSpeechRate =
+            safeRate
+
+        if (
+            isTtsReady
+        ) {
+            textToSpeech
+                ?.setSpeechRate(
+                    ttsSpeechRate
+                )
+        }
+    }
+
+    private fun formatSpeechRate(
+        rate: Float
+    ): String {
+        return when {
+            rate <= 0.75f -> "느리게"
+            rate <= 1.0f -> "보통"
+            rate <= 1.2f -> "빠르게"
+            else -> "매우 빠르게"
+        }
     }
 
     // =========================================================
@@ -2229,6 +2277,10 @@ class HaloAccessibilityService : AccessibilityService() {
             }
 
         try {
+            applyProfileButtonTextSizes(
+                panel
+            )
+
             windowManager.addView(
                 panel,
                 params
@@ -3264,31 +3316,8 @@ class HaloAccessibilityService : AccessibilityService() {
         }
         panel.addView(title)
 
-        val description = TextView(this).apply {
-            text = "무엇을 도와드릴까요?"
-            textSize = 19f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setPadding(0, 0, 0, dp(12))
-        }
-        panel.addView(description)
-
-        val status = TextView(this).apply {
-            text = if (currentScreenLines.isEmpty()) {
-                "필요한 경우 화면 이미지까지 자동으로 확인합니다."
-            } else {
-                "현재 화면 정보를 불러왔습니다."
-            }
-            textSize = 14f
-            gravity = Gravity.CENTER
-            setTextColor(Color.LTGRAY)
-            setPadding(0, 0, 0, dp(16))
-        }
-        panel.addView(status)
-
         val readableButton = createActionButton(
-            "🔍  보기 편하게",
-            "돋보기 또는 큰 글자로 확인"
+            "🔍  보기 편하게"
         )
         readableButton.setOnClickListener {
             removeActionMenu()
@@ -3297,8 +3326,7 @@ class HaloAccessibilityService : AccessibilityService() {
         panel.addView(readableButton)
 
         val importantButton = createActionButton(
-            "★  중요한 내용만",
-            "필요한 경우 화면 이미지까지 자동 분석"
+            "★  중요한 내용만"
         )
         importantButton.setOnClickListener {
             removeActionMenu()
@@ -3312,8 +3340,7 @@ class HaloAccessibilityService : AccessibilityService() {
         panel.addView(importantButton)
 
         val readButton = createActionButton(
-            "🔊  읽어줘",
-            "Node Tree와 로컬 OCR로 화면 글자 확인"
+            "🔊  화면 읽어줘"
         )
         readButton.setOnClickListener {
             removeActionMenu()
@@ -3327,8 +3354,7 @@ class HaloAccessibilityService : AccessibilityService() {
         panel.addView(readButton)
 
         val questionButton = createActionButton(
-            "💬  질문하기",
-            "필요한 경우 화면 이미지까지 자동 확인"
+            "💬  질문하기"
         )
         questionButton.setOnClickListener {
             removeActionMenu()
@@ -3337,8 +3363,7 @@ class HaloAccessibilityService : AccessibilityService() {
         panel.addView(questionButton)
 
         val profileButton = createActionButton(
-            "⚙  내 시야 설정",
-            "글자 크기와 돋보기 기본 배율"
+            "⚙  설정"
         )
         profileButton.setOnClickListener {
             removeActionMenu()
@@ -3374,6 +3399,7 @@ class HaloAccessibilityService : AccessibilityService() {
         params.gravity = Gravity.CENTER
 
         try {
+            applyProfileButtonTextSizes(panel)
             windowManager.addView(panel, params)
             actionMenu = panel
         } catch (e: Exception) {
@@ -3382,12 +3408,12 @@ class HaloAccessibilityService : AccessibilityService() {
     }
 
     private fun createActionButton(
-        titleText: String,
-        subtitleText: String
+        titleText: String
     ): LinearLayout {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
             background = createRoundedBackground(
                 Color.rgb(38, 38, 38),
                 Color.rgb(70, 70, 70),
@@ -3398,16 +3424,17 @@ class HaloAccessibilityService : AccessibilityService() {
 
             addView(TextView(this@HaloAccessibilityService).apply {
                 text = titleText
-                textSize = 18f
+                setTextSize(
+                    TypedValue.COMPLEX_UNIT_SP,
+                    configuredButtonTextSizeSp()
+                )
                 setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER_VERTICAL
+                maxLines = 3
+                setSingleLine(false)
             })
 
-            addView(TextView(this@HaloAccessibilityService).apply {
-                text = subtitleText
-                textSize = 13f
-                setTextColor(Color.LTGRAY)
-                setPadding(0, dp(4), 0, 0)
-            })
+            minimumHeight = configuredButtonHeightPx()
 
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -3443,7 +3470,7 @@ class HaloAccessibilityService : AccessibilityService() {
         scrollView.addView(content)
 
         content.addView(TextView(this).apply {
-            text = "내 시야 설정"
+            text = "설정"
             textSize = 24f
             gravity = Gravity.CENTER
             setTextColor(Color.rgb(100, 190, 255))
@@ -3455,13 +3482,6 @@ class HaloAccessibilityService : AccessibilityService() {
             textSize = 21f
             setTextColor(Color.WHITE)
             setPadding(0, 0, 0, dp(6))
-        })
-
-        content.addView(TextView(this).apply {
-            text = "아래 글자를 직접 보고 편한 크기를 선택하세요."
-            textSize = 15f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, 0, 0, dp(10))
         })
 
         val currentTextSetting = TextView(this).apply {
@@ -3480,12 +3500,17 @@ class HaloAccessibilityService : AccessibilityService() {
                 autoReadImportantResult
             )
             currentTextSetting.text = "현재 설정: ${size.toInt()}sp"
+
+            applyProfileButtonTextSizes(
+                panel
+            )
         }
 
         listOf(32f, 40f, 48f, 56f).forEach { size ->
             val button = Button(this).apply {
                 text = "${size.toInt()}sp"
                 textSize = size
+                tag = "KEEP_TEXT_SIZE"
                 isAllCaps = false
                 gravity = Gravity.CENTER
                 setPadding(dp(8), dp(10), dp(8), dp(10))
@@ -3520,13 +3545,6 @@ class HaloAccessibilityService : AccessibilityService() {
             textSize = 21f
             setTextColor(Color.WHITE)
             setPadding(0, 0, 0, dp(6))
-        })
-
-        content.addView(TextView(this).apply {
-            text = "돋보기를 시작했을 때 사용할 확대 배율입니다."
-            textSize = 15f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, 0, 0, dp(10))
         })
 
         val currentMagnifierSetting = TextView(this).apply {
@@ -3572,13 +3590,6 @@ class HaloAccessibilityService : AccessibilityService() {
             }
         )
 
-        content.addView(TextView(this).apply {
-            text = "설정한 배율은 다음에 돋보기를 시작할 때 적용됩니다."
-            textSize = 14f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, dp(10), 0, dp(24))
-        })
-
         content.addView(
             createDivider(),
             LinearLayout.LayoutParams(
@@ -3593,15 +3604,102 @@ class HaloAccessibilityService : AccessibilityService() {
             text = "음성 설정"
             textSize = 21f
             setTextColor(Color.WHITE)
-            setPadding(0, 0, 0, dp(6))
+            setPadding(0, 0, 0, dp(10))
         })
 
         content.addView(TextView(this).apply {
-            text = "AI 결과가 나오면 자동으로 읽을지 선택합니다."
-            textSize = 15f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, 0, 0, dp(14))
+            text = "읽는 속도"
+            textSize = 19f
+            setTextColor(Color.WHITE)
+            setPadding(0, 0, 0, dp(8))
         })
+
+        val currentSpeechRateSetting =
+            TextView(this).apply {
+                text =
+                    "현재: ${formatSpeechRate(ttsSpeechRate)}"
+                textSize =
+                    17f
+                setTextColor(
+                    Color.rgb(
+                        100,
+                        190,
+                        255
+                    )
+                )
+                setPadding(
+                    0,
+                    0,
+                    0,
+                    dp(10)
+                )
+            }
+
+        content.addView(
+            currentSpeechRateSetting
+        )
+
+        fun selectSpeechRate(
+            rate: Float
+        ) {
+            saveTtsSpeechRate(
+                rate
+            )
+
+            currentSpeechRateSetting.text =
+                "현재: ${formatSpeechRate(rate)}"
+
+            if (
+                isTtsReady
+            ) {
+                textToSpeech
+                    ?.stop()
+            }
+        }
+
+        content.addView(
+            createHorizontalButtonRow(
+                "느리게",
+                "보통",
+                {
+                    selectSpeechRate(
+                        0.7f
+                    )
+                },
+                {
+                    selectSpeechRate(
+                        0.9f
+                    )
+                }
+            )
+        )
+
+        content.addView(
+            createHorizontalButtonRow(
+                "빠르게",
+                "매우 빠르게",
+                {
+                    selectSpeechRate(
+                        1.1f
+                    )
+                },
+                {
+                    selectSpeechRate(
+                        1.3f
+                    )
+                }
+            ),
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin =
+                    dp(8)
+
+                bottomMargin =
+                    dp(18)
+            }
+        )
 
         val questionToggle = Button(this)
         fun updateQuestionToggle() {
@@ -3673,13 +3771,6 @@ class HaloAccessibilityService : AccessibilityService() {
             }
         )
 
-        content.addView(TextView(this).apply {
-            text = "자동 읽기를 꺼도 결과 화면의 읽기 버튼으로 직접 들을 수 있습니다."
-            textSize = 14f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, 0, 0, dp(20))
-        })
-
         panel.addView(
             scrollView,
             LinearLayout.LayoutParams(
@@ -3714,10 +3805,130 @@ class HaloAccessibilityService : AccessibilityService() {
         params.gravity = Gravity.CENTER
 
         try {
+            applyProfileButtonTextSizes(panel)
             windowManager.addView(panel, params)
             resultPanel = panel
         } catch (e: Exception) {
             Log.e(TAG, "Vision Profile 화면 표시 실패", e)
+        }
+    }
+
+    private fun configuredButtonTextSizeSp(): Float {
+        return (
+            profileTextSizeSp *
+                0.60f
+            ).coerceIn(
+            18f,
+            34f
+        )
+    }
+
+    private fun configuredButtonHeightPx(): Int {
+        val heightDp =
+            (
+                configuredButtonTextSizeSp() *
+                    2.25f
+                )
+                .toInt()
+                .coerceAtLeast(
+                    58
+                )
+
+        return dp(
+            heightDp
+        )
+    }
+
+    private fun applyProfileButtonTextSizes(
+        root: View
+    ) {
+        if (
+            root is Button
+        ) {
+            if (
+                root.tag !=
+                    "KEEP_TEXT_SIZE"
+            ) {
+                root.setTextSize(
+                    TypedValue.COMPLEX_UNIT_SP,
+                    configuredButtonTextSizeSp()
+                )
+            }
+
+            /*
+             * 큰 글자 설정 시 버튼 문구가 2~3줄이 되더라도
+             * 기존의 56dp / 58dp / 62dp 고정 높이에 잘리지 않도록
+             * 실제 텍스트 높이에 맞춰 버튼 자체가 늘어나게 한다.
+             */
+            root.isAllCaps =
+                false
+
+            root.setSingleLine(
+                false
+            )
+
+            root.maxLines =
+                3
+
+            root.ellipsize =
+                null
+
+            root.gravity =
+                Gravity.CENTER
+
+            root.minHeight =
+                configuredButtonHeightPx()
+
+            root.setPadding(
+                maxOf(
+                    root.paddingLeft,
+                    dp(10)
+                ),
+                maxOf(
+                    root.paddingTop,
+                    dp(12)
+                ),
+                maxOf(
+                    root.paddingRight,
+                    dp(10)
+                ),
+                maxOf(
+                    root.paddingBottom,
+                    dp(12)
+                )
+            )
+
+            val params =
+                root.layoutParams
+
+            if (
+                params != null
+            ) {
+                /*
+                 * 고정된 버튼 높이를 전부 WRAP_CONTENT로 바꾼다.
+                 * 가로 width/weight 값은 그대로 유지되므로
+                 * 2열 버튼 구조도 깨지지 않는다.
+                 */
+                params.height =
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+
+                root.layoutParams =
+                    params
+            }
+        }
+
+        if (
+            root is ViewGroup
+        ) {
+            for (
+                index in 0 until root.childCount
+            ) {
+                applyProfileButtonTextSizes(
+                    root.getChildAt(
+                        index
+                    )
+                )
+            }
         }
     }
 
@@ -3794,17 +4005,8 @@ class HaloAccessibilityService : AccessibilityService() {
             setPadding(0, dp(4), 0, dp(8))
         })
 
-        panel.addView(TextView(this).apply {
-            text = "원래 화면을 돋보기로 확대하거나\n화면의 글자를 크게 볼 수 있습니다."
-            textSize = 17f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setPadding(0, 0, 0, dp(18))
-        })
-
         val magnifierButton = createActionButton(
-            "🔎  돋보기로 보기",
-            "원래 화면을 이동 가능한 돋보기로 확대"
+            "🔎  돋보기로 보기"
         )
         magnifierButton.setOnClickListener {
             removeResultPanel()
@@ -3813,8 +4015,7 @@ class HaloAccessibilityService : AccessibilityService() {
         panel.addView(magnifierButton)
 
         val largeTextButton = createActionButton(
-            "📝  큰 글자로 보기",
-            "Node Tree와 로컬 OCR 중 더 유용한 글자를 사용"
+            "📝  큰 글자로 보기"
         )
         largeTextButton.setOnClickListener {
             removeResultPanel()
@@ -3848,11 +4049,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
                     showZoomTextPanel(
                         titleText = "큰 글자로 보기",
-                        guideText = if (usedOcr) {
-                            "화면 이미지에서 찾은 글자를 크게 표시했습니다."
-                        } else {
-                            "현재 화면의 글자를 크게 표시했습니다."
-                        },
+                        guideText = "",
                         contentText = text,
                         readButtonText = null,
                         onRead = null
@@ -3905,6 +4102,7 @@ class HaloAccessibilityService : AccessibilityService() {
         params.gravity = Gravity.CENTER
 
         try {
+            applyProfileButtonTextSizes(panel)
             windowManager.addView(panel, params)
             resultPanel = panel
         } catch (e: Exception) {
@@ -4297,7 +4495,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
                     showMessagePanel(
                         "중요한 내용만",
-                        "서버에 연결할 수 없습니다.\n\nFastAPI 서버와 adb reverse 상태를 확인해주세요."
+                        "서버에 연결할 수 없습니다.\n\n인터넷 연결과 HaloVision 서버 상태를 확인해주세요."
                     )
                 }
             } finally {
@@ -4311,7 +4509,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
         showZoomTextPanel(
             titleText = "중요한 내용만",
-            guideText = "AI가 현재 화면에서 핵심 정보만 정리했습니다.",
+            guideText = "",
             contentText = answer,
             readButtonText = "🔊 핵심 내용 읽어주기",
             onRead = {
@@ -4328,6 +4526,12 @@ class HaloAccessibilityService : AccessibilityService() {
                     )
                     speakText(answer)
                 }
+            },
+            extraButtonText = "💬 질문하기",
+            onExtraButton = {
+                textToSpeech?.stop()
+                removeResultPanel()
+                startQuestionListening()
             }
         )
     }
@@ -4341,7 +4545,9 @@ class HaloAccessibilityService : AccessibilityService() {
         guideText: String,
         contentText: String,
         readButtonText: String?,
-        onRead: (() -> Unit)?
+        onRead: (() -> Unit)?,
+        extraButtonText: String? = null,
+        onExtraButton: (() -> Unit)? = null
     ) {
         removeResultPanel()
 
@@ -4388,12 +4594,30 @@ class HaloAccessibilityService : AccessibilityService() {
         header.addView(sizeLabel)
         panel.addView(header)
 
-        panel.addView(TextView(this).apply {
-            text = guideText
-            textSize = 14f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, dp(10), 0, dp(10))
-        })
+        if (
+            guideText.isNotBlank()
+        ) {
+            panel.addView(
+                TextView(this).apply {
+                    text =
+                        guideText
+
+                    textSize =
+                        14f
+
+                    setTextColor(
+                        Color.LTGRAY
+                    )
+
+                    setPadding(
+                        0,
+                        dp(10),
+                        0,
+                        dp(10)
+                    )
+                }
+            )
+        }
 
         val zoomRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -4504,6 +4728,29 @@ class HaloAccessibilityService : AccessibilityService() {
             )
         }
 
+        if (
+            extraButtonText != null &&
+            onExtraButton != null
+        ) {
+            panel.addView(
+                Button(this).apply {
+                    text =
+                        extraButtonText
+
+                    setOnClickListener {
+                        onExtraButton()
+                    }
+                },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(58)
+                ).apply {
+                    bottomMargin =
+                        dp(8)
+                }
+            )
+        }
+
         panel.addView(
             Button(this).apply {
                 text = "HALO 메뉴로 돌아가기"
@@ -4530,6 +4777,7 @@ class HaloAccessibilityService : AccessibilityService() {
         params.gravity = Gravity.CENTER
 
         try {
+            applyProfileButtonTextSizes(panel)
             windowManager.addView(panel, params)
             resultPanel = panel
         } catch (e: Exception) {
@@ -4553,7 +4801,7 @@ class HaloAccessibilityService : AccessibilityService() {
                         result != TextToSpeech.LANG_NOT_SUPPORTED
 
                 if (isTtsReady) {
-                    textToSpeech?.setSpeechRate(0.9f)
+                    textToSpeech?.setSpeechRate(ttsSpeechRate)
                     textToSpeech?.setPitch(1.0f)
                 }
             } else {
@@ -4574,14 +4822,14 @@ class HaloAccessibilityService : AccessibilityService() {
             )
 
             showMessagePanel(
-                "읽어줘",
+                "화면 읽어줘",
                 "음성 읽기 기능을 준비하지 못했습니다.\n\n휴대폰의 TTS 설정을 확인해주세요."
             )
             return
         }
 
         showMessagePanel(
-            "읽어줘",
+            "화면 읽어줘",
             "현재 화면에서 읽을 내용을 확인하고 있습니다..."
         )
 
@@ -4621,7 +4869,7 @@ class HaloAccessibilityService : AccessibilityService() {
                 )
 
                 showMessagePanel(
-                    "읽어줘",
+                    "화면 읽어줘",
                     message
                 )
             }
@@ -4695,7 +4943,7 @@ class HaloAccessibilityService : AccessibilityService() {
         }
 
         panel.addView(TextView(this).apply {
-            text = "읽어줘"
+            text = "화면 읽어줘"
             textSize = 24f
             setTextColor(Color.rgb(100, 190, 255))
             setPadding(0, 0, 0, dp(18))
@@ -4777,6 +5025,7 @@ class HaloAccessibilityService : AccessibilityService() {
         params.gravity = Gravity.CENTER
 
         try {
+            applyProfileButtonTextSizes(panel)
             windowManager.addView(panel, params)
             resultPanel = panel
         } catch (e: Exception) {
@@ -5154,7 +5403,7 @@ class HaloAccessibilityService : AccessibilityService() {
 
                     showMessagePanel(
                         "질문하기",
-                        "서버에 연결할 수 없습니다.\n\nFastAPI 서버와 adb reverse 상태를 확인해주세요."
+                        "서버에 연결할 수 없습니다.\n\n인터넷 연결과 HaloVision 서버 상태를 확인해주세요."
                     )
                 }
             } finally {
@@ -5373,6 +5622,7 @@ class HaloAccessibilityService : AccessibilityService() {
         params.gravity = Gravity.CENTER
 
         try {
+            applyProfileButtonTextSizes(panel)
             windowManager.addView(panel, params)
             resultPanel = panel
         } catch (e: Exception) {
@@ -5446,6 +5696,7 @@ class HaloAccessibilityService : AccessibilityService() {
         params.gravity = Gravity.CENTER
 
         try {
+            applyProfileButtonTextSizes(panel)
             windowManager.addView(panel, params)
             resultPanel = panel
         } catch (e: Exception) {

@@ -47,11 +47,16 @@ class _HaloControlCenterState extends State<HaloControlCenter>
   static const Color runningGreen = Color(0xFF58D17B);
   static const Color offRed = Color(0xFFE35C5C);
 
-  bool _permissionEnabled = false;
+  bool _accessibilityEnabled = false;
+  bool _microphoneGranted = false;
   bool _haloRunning = false;
+
   bool _loading = true;
   bool _changing = false;
   String? _message;
+
+  bool get _initialSetupComplete =>
+      _accessibilityEnabled && _microphoneGranted;
 
   @override
   void initState() {
@@ -75,19 +80,28 @@ class _HaloControlCenterState extends State<HaloControlCenter>
 
   Future<void> _refreshStatus() async {
     try {
-      final permission =
-          await _channel.invokeMethod<bool>('isAccessibilityServiceEnabled') ??
+      final accessibility =
+          await _channel.invokeMethod<bool>(
+                'isAccessibilityServiceEnabled',
+              ) ??
               false;
 
-      final running = permission
+      final microphone =
+          await _channel.invokeMethod<bool>(
+                'isMicrophonePermissionGranted',
+              ) ??
+              false;
+
+      final running = accessibility
           ? (await _channel.invokeMethod<bool>('isHaloRunning') ?? true)
           : false;
 
       if (!mounted) return;
 
       setState(() {
-        _permissionEnabled = permission;
-        _haloRunning = permission && running;
+        _accessibilityEnabled = accessibility;
+        _microphoneGranted = microphone;
+        _haloRunning = accessibility && running;
         _loading = false;
         _message = null;
       });
@@ -101,29 +115,110 @@ class _HaloControlCenterState extends State<HaloControlCenter>
     }
   }
 
-  Future<void> _onMainButtonPressed() async {
+  // =========================================================
+  // 최초 설정
+  //
+  // 1. 마이크 권한은 Android 권한 팝업으로 앱 안에서 바로 요청
+  // 2. 접근성 권한은 Android 정책상 사용자가 설정 화면에서 직접 허용
+  // =========================================================
+
+  Future<void> _runInitialSetup() async {
     if (_loading || _changing) return;
 
-    /*
-     * 접근성 권한 자체가 없으면 최초 1회 시스템 설정이 필요하다.
-     */
-    if (!_permissionEnabled) {
-      try {
-        await _channel.invokeMethod<void>('openAccessibilitySettings');
-      } on PlatformException catch (e) {
+    setState(() {
+      _changing = true;
+      _message = null;
+    });
+
+    try {
+      var microphone = _microphoneGranted;
+
+      if (!microphone) {
+        microphone =
+            await _channel.invokeMethod<bool>(
+                  'requestMicrophonePermission',
+                ) ??
+                false;
+
         if (!mounted) return;
 
         setState(() {
-          _message = '접근성 설정을 열지 못했습니다: ${e.message ?? e.code}';
+          _microphoneGranted = microphone;
         });
       }
+
+      if (!_accessibilityEnabled) {
+        if (mounted) {
+          setState(() {
+            _message =
+                '설치된 앱에서 "HaloVision 접근성 서비스"를 선택한 뒤 사용을 켜주세요.';
+          });
+        }
+
+        await Future<void>.delayed(
+          const Duration(milliseconds: 350),
+        );
+
+        await _channel.invokeMethod<void>(
+          'openAccessibilitySettings',
+        );
+
+        return;
+      }
+
+      await _refreshStatus();
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _message = '초기 설정 중 문제가 발생했습니다: ${e.message ?? e.code}';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _changing = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _requestMicrophonePermission() async {
+    try {
+      final granted =
+          await _channel.invokeMethod<bool>(
+                'requestMicrophonePermission',
+              ) ??
+              false;
+
+      if (!mounted) return;
+
+      setState(() {
+        _microphoneGranted = granted;
+
+        if (!granted) {
+          _message =
+              '마이크 권한이 없어도 다른 기능은 사용할 수 있지만, 음성 질문은 사용할 수 없습니다.';
+        } else {
+          _message = null;
+        }
+      });
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _message = '마이크 권한을 요청하지 못했습니다: ${e.message ?? e.code}';
+      });
+    }
+  }
+
+  Future<void> _onMainButtonPressed() async {
+    if (_loading || _changing) return;
+
+    if (!_accessibilityEnabled) {
+      await _runInitialSetup();
       return;
     }
 
-    /*
-     * 권한이 이미 허용된 이후부터는 시스템 설정으로 가지 않고
-     * 앱 안에서 HALO 기능만 바로 ON/OFF 한다.
-     */
     setState(() {
       _changing = true;
       _message = null;
@@ -145,12 +240,15 @@ class _HaloControlCenterState extends State<HaloControlCenter>
       if (!success) {
         setState(() {
           _message = nextState
-              ? 'HALO를 켜지 못했습니다. 접근성 권한 상태를 확인해주세요.'
-              : 'HALO를 끄지 못했습니다.';
+              ? 'HaloVision을 켜지 못했습니다. 접근성 권한을 확인해주세요.'
+              : 'HaloVision을 끄지 못했습니다.';
         });
       }
 
-      await Future<void>.delayed(const Duration(milliseconds: 250));
+      await Future<void>.delayed(
+        const Duration(milliseconds: 250),
+      );
+
       await _refreshStatus();
     } on PlatformException catch (e) {
       if (!mounted) return;
@@ -167,14 +265,30 @@ class _HaloControlCenterState extends State<HaloControlCenter>
     }
   }
 
-  Future<void> _openPermissionSettings() async {
+  Future<void> _openAccessibilitySettings() async {
     try {
-      await _channel.invokeMethod<void>('openAccessibilitySettings');
+      await _channel.invokeMethod<void>(
+        'openAccessibilitySettings',
+      );
     } on PlatformException catch (e) {
       if (!mounted) return;
 
       setState(() {
         _message = '접근성 설정을 열지 못했습니다: ${e.message ?? e.code}';
+      });
+    }
+  }
+
+  Future<void> _openAppSettings() async {
+    try {
+      await _channel.invokeMethod<void>(
+        'openAppSettings',
+      );
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _message = '앱 설정을 열지 못했습니다: ${e.message ?? e.code}';
       });
     }
   }
@@ -199,14 +313,22 @@ class _HaloControlCenterState extends State<HaloControlCenter>
             ),
             children: [
               _header(),
-              const SizedBox(height: 34),
+              const SizedBox(height: 30),
               _statusCard(),
               const SizedBox(height: 18),
+
+              if (!_initialSetupComplete) ...[
+                _setupCard(),
+                const SizedBox(height: 18),
+              ],
+
               _mainButton(),
+
               if (_message != null) ...[
                 const SizedBox(height: 16),
                 _messageCard(),
               ],
+
               const SizedBox(height: 20),
               _permissionCard(),
               const SizedBox(height: 18),
@@ -216,6 +338,7 @@ class _HaloControlCenterState extends State<HaloControlCenter>
               const SizedBox(height: 18),
               _privacyCard(),
               const SizedBox(height: 24),
+
               TextButton.icon(
                 onPressed: _changing ? null : _refreshStatus,
                 icon: const Icon(Icons.refresh_rounded),
@@ -254,7 +377,7 @@ class _HaloControlCenterState extends State<HaloControlCenter>
               ),
               SizedBox(height: 8),
               Text(
-                '기존 앱을 그대로 사용하면서\n필요한 순간에 HALO를 불러보세요.',
+                '필요한 순간에 HALO를 불러보세요.',
                 style: TextStyle(
                   color: secondaryText,
                   fontSize: 18,
@@ -267,23 +390,47 @@ class _HaloControlCenterState extends State<HaloControlCenter>
         ),
         const SizedBox(width: 18),
         Container(
-          width: 72,
-          height: 72,
-          alignment: Alignment.center,
+          width: 86,
+          height: 86,
           decoration: BoxDecoration(
-            color: haloBlue,
             shape: BoxShape.circle,
-            border: Border.all(
-              color: const Color(0xFF86C8FF),
-              width: 4,
-            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF5DA9FF).withOpacity(0.28),
+                blurRadius: 18,
+                spreadRadius: 2,
+              ),
+            ],
           ),
-          child: const Text(
-            'HALO',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 17,
-              fontWeight: FontWeight.w800,
+          child: Container(
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: const Color(0xFF7FC1FF),
+              border: Border.all(
+                color: const Color(0xFF9DD3FF),
+                width: 1.5,
+              ),
+            ),
+            child: Container(
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: const Color(0xFF3E63C9),
+                border: Border.all(
+                  color: const Color(0xFF6EB8FF),
+                  width: 1.5,
+                ),
+              ),
+              child: const Text(
+                'HALO',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 19,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.5,
+                ),
+              ),
             ),
           ),
         ),
@@ -300,21 +447,18 @@ class _HaloControlCenterState extends State<HaloControlCenter>
       statusColor = Colors.grey;
       title = '상태 확인 중...';
       description = 'HaloVision 상태를 확인하고 있습니다.';
-    } else if (!_permissionEnabled) {
+    } else if (!_accessibilityEnabled) {
       statusColor = haloYellow;
       title = '처음 사용 설정이 필요합니다';
-      description =
-          '접근성 권한을 한 번 허용하면 이후에는 이 앱에서 HaloVision을 바로 켜고 끌 수 있습니다.';
+      description = '아래 버튼을 누르면 필요한 설정을 순서대로 안내합니다.';
     } else if (_haloRunning) {
       statusColor = runningGreen;
       title = 'HaloVision 실행 중';
-      description =
-          'HALO 버튼이 활성화되어 있습니다. 다른 앱으로 이동해 바로 사용할 수 있습니다.';
+      description = '다른 앱으로 이동해 화면의 HALO 버튼을 누르면 됩니다.';
     } else {
       statusColor = offRed;
       title = 'HaloVision 꺼짐';
-      description =
-          'HALO 버튼과 화면 분석 기능이 꺼져 있습니다. 접근성 권한만 유지되어 다시 켤 때 설정 화면으로 갈 필요가 없습니다.';
+      description = 'HALO 버튼과 화면 분석 기능이 꺼져 있습니다.';
     }
 
     return Container(
@@ -370,13 +514,146 @@ class _HaloControlCenterState extends State<HaloControlCenter>
     );
   }
 
+  Widget _setupCard() {
+    return Container(
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: const Color(0xFF17150D),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: haloYellow.withOpacity(0.70),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '처음 사용 설정',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          _setupStatusRow(
+            number: '1',
+            title: '마이크',
+            description: '질문하기에서 음성으로 말할 때 사용',
+            complete: _microphoneGranted,
+          ),
+
+          const SizedBox(height: 14),
+
+          _setupStatusRow(
+            number: '2',
+            title: '접근성 서비스',
+            description: '다른 앱 화면에서 HALO를 사용하기 위해 필요',
+            complete: _accessibilityEnabled,
+          ),
+
+          const SizedBox(height: 18),
+
+          SizedBox(
+            width: double.infinity,
+            height: 62,
+            child: FilledButton.icon(
+              onPressed:
+                  (_loading || _changing) ? null : _runInitialSetup,
+              icon: const Icon(
+                Icons.check_circle_outline_rounded,
+                size: 26,
+              ),
+              label: Text(
+                _changing ? '설정 중...' : '처음 설정 시작',
+                style: const TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              style: FilledButton.styleFrom(
+                backgroundColor: haloYellow,
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _setupStatusRow({
+    required String number,
+    required String title,
+    required String description,
+    required bool complete,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 34,
+          height: 34,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: complete ? runningGreen : const Color(0xFF353535),
+            shape: BoxShape.circle,
+          ),
+          child: complete
+              ? const Icon(
+                  Icons.check_rounded,
+                  color: Colors.black,
+                  size: 23,
+                )
+              : Text(
+                  number,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                description,
+                style: const TextStyle(
+                  color: secondaryText,
+                  fontSize: 14,
+                  height: 1.4,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _mainButton() {
     final String label;
     final Color background;
     final Color foreground;
     final IconData icon;
 
-    if (!_permissionEnabled) {
+    if (!_accessibilityEnabled) {
       label = 'HaloVision 처음 켜기';
       background = haloYellow;
       foreground = Colors.black;
@@ -426,50 +703,106 @@ class _HaloControlCenterState extends State<HaloControlCenter>
   }
 
   Widget _permissionCard() {
-    final permissionText =
-        _permissionEnabled ? '허용됨' : '허용 필요';
-
     return _sectionCard(
       icon: Icons.admin_panel_settings_outlined,
-      title: '접근성 권한',
+      title: '권한 상태',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            '현재 상태: $permissionText',
-            style: TextStyle(
-              color: _permissionEnabled ? runningGreen : haloYellow,
-              fontSize: 17,
-              fontWeight: FontWeight.w800,
-            ),
+          _permissionStatusLine(
+            icon: Icons.accessibility_new_rounded,
+            title: '접근성 서비스',
+            enabled: _accessibilityEnabled,
           ),
-          const SizedBox(height: 8),
-          const Text(
-            '권한을 완전히 해제하거나 다시 허용하려면 Android 접근성 설정에서 변경할 수 있습니다.',
-            style: TextStyle(
-              color: secondaryText,
-              fontSize: 15,
-              height: 1.5,
-            ),
+          const SizedBox(height: 12),
+          _permissionStatusLine(
+            icon: Icons.mic_rounded,
+            title: '마이크',
+            enabled: _microphoneGranted,
           ),
-          const SizedBox(height: 14),
-          OutlinedButton.icon(
-            onPressed: _openPermissionSettings,
-            icon: const Icon(Icons.settings_accessibility_rounded),
-            label: const Text('접근성 권한 관리'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.white,
-              side: const BorderSide(
-                color: Color(0xFF555555),
-              ),
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 13,
+          const SizedBox(height: 16),
+
+          if (!_microphoneGranted)
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed:
+                    _changing ? null : _requestMicrophonePermission,
+                icon: const Icon(Icons.mic_none_rounded),
+                label: const Text('마이크 권한 허용'),
               ),
             ),
-          ),
+
+          if (!_accessibilityEnabled) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed:
+                    _changing ? null : _openAccessibilitySettings,
+                icon: const Icon(Icons.settings_accessibility_rounded),
+                label: const Text('접근성 권한 허용'),
+              ),
+            ),
+          ],
+
+          if (_accessibilityEnabled) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed:
+                    _changing ? null : _openAccessibilitySettings,
+                icon: const Icon(Icons.settings_accessibility_rounded),
+                label: const Text('접근성 권한 관리'),
+              ),
+            ),
+          ],
+
+          if (!_microphoneGranted) ...[
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: _openAppSettings,
+              child: const Text('마이크 권한이 계속 안 뜨면 앱 설정 열기'),
+            ),
+          ],
         ],
       ),
+    );
+  }
+
+  Widget _permissionStatusLine({
+    required IconData icon,
+    required String title,
+    required bool enabled,
+  }) {
+    return Row(
+      children: [
+        Icon(
+          icon,
+          color: enabled ? runningGreen : haloYellow,
+          size: 24,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 17,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        Text(
+          enabled ? '허용됨' : '허용 필요',
+          style: TextStyle(
+            color: enabled ? runningGreen : haloYellow,
+            fontSize: 15,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+      ],
     );
   }
 
@@ -478,7 +811,7 @@ class _HaloControlCenterState extends State<HaloControlCenter>
       icon: Icons.touch_app_rounded,
       title: '사용 방법',
       child: const Text(
-        'HaloVision을 켠 뒤 네이버, 쿠팡, 카카오톡, 카메라 등 원하는 앱을 사용하세요. '
+        'HaloVision을 켠 뒤 원하는 앱으로 이동하세요. '
         '보기 어려운 순간 화면의 HALO 버튼을 누르면 됩니다.',
         style: TextStyle(
           color: secondaryText,
@@ -509,7 +842,7 @@ class _HaloControlCenterState extends State<HaloControlCenter>
           Divider(height: 26, color: Color(0xFF303030)),
           _FeatureRow(
             icon: '🔊',
-            title: '읽어줘',
+            title: '화면 읽어줘',
             description: '현재 화면의 글자를 음성으로 확인',
           ),
           Divider(height: 26, color: Color(0xFF303030)),
