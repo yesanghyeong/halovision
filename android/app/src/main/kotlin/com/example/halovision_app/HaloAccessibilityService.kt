@@ -646,13 +646,6 @@ class HaloAccessibilityService : AccessibilityService() {
     }
 
     private fun captureCurrentScreen(): List<String> {
-        val root =
-            rootInActiveWindow
-                ?: run {
-                    currentScreenNodes = emptyList()
-                    return emptyList()
-                }
-
         val lines =
             mutableListOf<String>()
 
@@ -660,27 +653,106 @@ class HaloAccessibilityService : AccessibilityService() {
             mutableListOf<HaloScreenNode>()
 
         val nextId =
-            intArrayOf(1)
+            intArrayOf(
+                1
+            )
 
-        collectScreenData(
-            node = root,
-            lines = lines,
-            nodes = nodes,
-            nextId = nextId
-        )
+        val roots =
+            mutableListOf<AccessibilityNodeInfo>()
+
+        rootInActiveWindow
+            ?.let {
+                roots.add(
+                    it
+                )
+            }
+
+        /*
+         * 일부 Samsung Internet / WebView 조합에서는
+         * rootInActiveWindow가 주소창/툴바 쪽 Window를 우선 반환하고
+         * 실제 웹 본문이 다른 Application Window에 남아 있을 수 있다.
+         *
+         * 그래서 현재 application window의 root도 함께 확인한다.
+         */
+        try {
+            windows
+                .filter {
+                    it.type ==
+                        android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION
+                }
+                .mapNotNull {
+                    it.root
+                }
+                .forEach { root ->
+                    val packageName =
+                        root.packageName
+                            ?.toString()
+                            .orEmpty()
+
+                    val isSystemUi =
+                        packageName ==
+                            "com.android.systemui"
+
+                    if (
+                        !isSystemUi &&
+                        roots.none {
+                            it == root
+                        }
+                    ) {
+                        roots.add(
+                            root
+                        )
+                    }
+                }
+        } catch (
+            e: Exception
+        ) {
+            Log.d(
+                TAG,
+                "SCREEN WINDOWS 추가 수집 실패 / ${e.message}"
+            )
+        }
+
+        for (
+            root in roots
+        ) {
+            collectScreenData(
+                node = root,
+                lines = lines,
+                nodes = nodes,
+                nextId = nextId
+            )
+        }
+
+        val uniqueNodes =
+            nodes
+                .distinctBy { node ->
+                    "${node.text}|${node.contentDescription}|" +
+                        "${node.bounds.left},${node.bounds.top}," +
+                        "${node.bounds.right},${node.bounds.bottom}"
+                }
 
         currentScreenNodes =
-            nodes
+            uniqueNodes
+
+        val cleanLines =
+            lines
+                .map {
+                    it.trim()
+                }
+                .filter {
+                    it.isNotEmpty()
+                }
+                .distinct()
 
         Log.d(
             TAG,
-            "SCREEN NODE SNAPSHOT / text_lines=${lines.size} / positioned_nodes=${nodes.size}"
+            "SCREEN NODE SNAPSHOT / roots=${roots.size} / " +
+                "text_lines=${cleanLines.size} / " +
+                "positioned_nodes=${uniqueNodes.size}"
         )
 
-        return lines
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
+        return cleanLines
     }
 
     private fun collectScreenData(
@@ -1724,32 +1796,95 @@ class HaloAccessibilityService : AccessibilityService() {
     // 생겨 강조 박스가 실제 요소보다 아래로 표시될 수 있다.
     // =========================================================
 
-    private fun getOverlaySystemBarInsets(): android.graphics.Insets {
-        if (
-            Build.VERSION.SDK_INT >=
-            Build.VERSION_CODES.R
-        ) {
-            return try {
-                windowManager
-                    .currentWindowMetrics
-                    .windowInsets
-                    .getInsetsIgnoringVisibility(
-                        WindowInsets.Type.systemBars()
-                    )
-            } catch (
-                e: Exception
-            ) {
-                Log.e(
-                    TAG,
-                    "Overlay inset 계산 실패",
-                    e
+    private fun getOverlayOriginOffset(): Pair<Int, Int> {
+        /*
+         * AccessibilityNode의 bounds는 실제 화면 좌표이고,
+         * TYPE_ACCESSIBILITY_OVERLAY의 y=0이 어느 위치에서 시작하는지는
+         * Samsung 기기/One UI 버전에 따라 차이가 생길 수 있다.
+         *
+         * 이미 화면에 떠 있는 HALO 버튼의 실제 screen 좌표와
+         * WindowManager.LayoutParams.y를 비교하면 이 기기의
+         * Overlay 좌표 원점을 런타임에 직접 측정할 수 있다.
+         */
+        val button =
+            floatingButton
+                ?: return Pair(
+                    0,
+                    0
                 )
 
-                android.graphics.Insets.NONE
-            }
-        }
+        return try {
+            val location =
+                IntArray(
+                    2
+                )
 
-        return android.graphics.Insets.NONE
+            button.getLocationOnScreen(
+                location
+            )
+
+            val layoutParams =
+                button.layoutParams as?
+                    WindowManager.LayoutParams
+
+            if (
+                layoutParams == null
+            ) {
+                Pair(
+                    0,
+                    0
+                )
+            } else {
+                val measuredY =
+                    location[1] -
+                        layoutParams.y
+
+                /*
+                 * TOP|END gravity의 x는 오른쪽 기준이라 x 보정값 계산에는
+                 * 적합하지 않다. 일반 스마트폰의 좌/우 system inset은
+                 * portrait에서 대부분 0이므로 x는 0으로 유지한다.
+                 */
+                val safeY =
+                    if (
+                        kotlin.math.abs(
+                            measuredY
+                        ) <=
+                        dp(
+                            80
+                        )
+                    ) {
+                        measuredY
+                    } else {
+                        0
+                    }
+
+                Log.d(
+                    TAG,
+                    "HALO_TARGET_OFFSET_CALIBRATION | " +
+                        "button_screen_y=${location[1]} | " +
+                        "layout_y=${layoutParams.y} | " +
+                        "offset_y=$safeY"
+                )
+
+                Pair(
+                    0,
+                    safeY
+                )
+            }
+        } catch (
+            e: Exception
+        ) {
+            Log.e(
+                TAG,
+                "Overlay 좌표 원점 측정 실패",
+                e
+            )
+
+            Pair(
+                0,
+                0
+            )
+        }
     }
 
     // =========================================================
@@ -1770,19 +1905,18 @@ class HaloAccessibilityService : AccessibilityService() {
                 .currentWindowMetrics
                 .bounds
 
-        val systemBarInsets =
-            getOverlaySystemBarInsets()
+        val overlayOriginOffset =
+            getOverlayOriginOffset()
 
         /*
          * target.bounds는 실제 화면 좌표.
-         * Overlay LayoutParams의 x/y에는 system bar inset을 빼서
-         * 시각적으로 같은 위치에 맞춘다.
+         * 기기에서 직접 측정한 Overlay 좌표 원점 차이만큼 보정한다.
          */
         val overlayOffsetX =
-            systemBarInsets.left
+            overlayOriginOffset.first
 
         val overlayOffsetY =
-            systemBarInsets.top
+            overlayOriginOffset.second
 
         Log.d(
             TAG,
@@ -2697,6 +2831,198 @@ class HaloAccessibilityService : AccessibilityService() {
     // 서버 전송 없음 / GPT 호출 없음 / 파일 저장 없음
     // =========================================================
 
+    private fun recognizeHaloCameraPreviewTextLocally(
+        recognizer: TextRecognizer,
+        onReady: (String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        Log.d(
+            TAG,
+            "HALO CAMERA OCR | source=CAMERAX_PREVIEW"
+        )
+
+        HaloCameraActivity
+            .captureCurrentPreviewBitmap { previewBitmap ->
+
+                if (
+                    previewBitmap == null ||
+                    previewBitmap.width <= 0 ||
+                    previewBitmap.height <= 0
+                ) {
+                    try {
+                        previewBitmap
+                            ?.recycle()
+                    } catch (_: Exception) {
+                    }
+
+                    onError(
+                        "카메라 화면을 가져오지 못했습니다."
+                    )
+
+                    return@captureCurrentPreviewBitmap
+                }
+
+                Log.d(
+                    TAG,
+                    "HALO CAMERA OCR | bitmap=${previewBitmap.width}x${previewBitmap.height}"
+                )
+
+                val originalImage =
+                    InputImage.fromBitmap(
+                        previewBitmap,
+                        0
+                    )
+
+                recognizer
+                    .process(
+                        originalImage
+                    )
+                    .addOnSuccessListener { originalResult ->
+                        val originalText =
+                            extractOcrText(
+                                originalResult
+                            )
+
+                        Thread {
+                            try {
+                                val enhancedBitmap =
+                                    createEnhancedOcrBitmap(
+                                        previewBitmap
+                                    )
+
+                                mainHandler.post {
+                                    val enhancedImage =
+                                        InputImage.fromBitmap(
+                                            enhancedBitmap,
+                                            0
+                                        )
+
+                                    recognizer
+                                        .process(
+                                            enhancedImage
+                                        )
+                                        .addOnSuccessListener { enhancedResult ->
+                                            val enhancedText =
+                                                extractOcrText(
+                                                    enhancedResult
+                                                )
+
+                                            val selectedText =
+                                                chooseBestOcrPass(
+                                                    originalText,
+                                                    enhancedText
+                                                )
+                                                    .trim()
+
+                                            Log.d(
+                                                TAG,
+                                                "HALO CAMERA OCR SUCCESS | " +
+                                                    "original_chars=${originalText.length} | " +
+                                                    "enhanced_chars=${enhancedText.length} | " +
+                                                    "selected_chars=${selectedText.length}"
+                                            )
+
+                                            try {
+                                                enhancedBitmap.recycle()
+                                            } catch (_: Exception) {
+                                            }
+
+                                            try {
+                                                previewBitmap.recycle()
+                                            } catch (_: Exception) {
+                                            }
+
+                                            if (
+                                                selectedText.isBlank()
+                                            ) {
+                                                onError(
+                                                    "카메라에서 읽을 수 있는 글자를 찾지 못했습니다."
+                                                )
+                                            } else {
+                                                onReady(
+                                                    selectedText
+                                                )
+                                            }
+                                        }
+                                        .addOnFailureListener { enhancedError ->
+                                            Log.e(
+                                                TAG,
+                                                "HALO CAMERA OCR enhanced 실패 → original 사용",
+                                                enhancedError
+                                            )
+
+                                            try {
+                                                enhancedBitmap.recycle()
+                                            } catch (_: Exception) {
+                                            }
+
+                                            try {
+                                                previewBitmap.recycle()
+                                            } catch (_: Exception) {
+                                            }
+
+                                            if (
+                                                originalText.isBlank()
+                                            ) {
+                                                onError(
+                                                    "카메라에서 읽을 수 있는 글자를 찾지 못했습니다."
+                                                )
+                                            } else {
+                                                onReady(
+                                                    originalText
+                                                )
+                                            }
+                                        }
+                                }
+                            } catch (
+                                e: Exception
+                            ) {
+                                Log.e(
+                                    TAG,
+                                    "HALO CAMERA OCR 전처리 실패",
+                                    e
+                                )
+
+                                try {
+                                    previewBitmap.recycle()
+                                } catch (_: Exception) {
+                                }
+
+                                mainHandler.post {
+                                    if (
+                                        originalText.isBlank()
+                                    ) {
+                                        onError(
+                                            "카메라에서 읽을 수 있는 글자를 찾지 못했습니다."
+                                        )
+                                    } else {
+                                        onReady(
+                                            originalText
+                                        )
+                                    }
+                                }
+                            }
+                        }.start()
+                    }
+                    .addOnFailureListener { error ->
+                        Log.e(
+                            TAG,
+                            "HALO CAMERA OCR original 실패",
+                            error
+                        )
+
+                        try {
+                            previewBitmap.recycle()
+                        } catch (_: Exception) {
+                        }
+
+                        onError(
+                            "카메라 화면의 글자를 인식하지 못했습니다."
+                        )
+                    }
+            }
+    }
+
     private fun recognizeCurrentScreenTextLocally(
         onReady: (String) -> Unit,
         onError: (String) -> Unit
@@ -2726,6 +3052,23 @@ class HaloAccessibilityService : AccessibilityService() {
         ) {
             onError(
                 "글자 인식 기능을 준비하지 못했습니다."
+            )
+
+            return
+        }
+
+        /*
+         * HaloVision 전용 카메라에서는 Accessibility Screenshot 대신
+         * CameraX PreviewView의 실제 현재 프레임을 OCR한다.
+         * XCover5처럼 Screenshot 합성 방식이 다른 기기에서도 안정적이다.
+         */
+        if (
+            HaloCameraActivity.isActive()
+        ) {
+            recognizeHaloCameraPreviewTextLocally(
+                recognizer = recognizer,
+                onReady = onReady,
+                onError = onError
             )
 
             return
@@ -2797,6 +3140,12 @@ class HaloAccessibilityService : AccessibilityService() {
 
                                 restoreHaloOverlays(
                                     oldState
+                                )
+
+                                Log.d(
+                                    TAG,
+                                    "OCR SCREENSHOT BITMAP | " +
+                                        "${softwareBitmap.width}x${softwareBitmap.height}"
                                 )
 
                                 Log.d(
@@ -3054,6 +3403,119 @@ class HaloAccessibilityService : AccessibilityService() {
         )
     }
 
+    // =========================================================
+    // 실제 본문이 아니라 브라우저/갤러리/카메라의 조작 UI만 수집된 경우 감지
+    // =========================================================
+
+    private fun isLikelyUiChromeOnly(
+        value: String
+    ): Boolean {
+        val clean =
+            value
+                .trim()
+
+        if (
+            clean.isBlank()
+        ) {
+            return true
+        }
+
+        val lines =
+            clean
+                .lines()
+                .map {
+                    it.trim()
+                }
+                .filter {
+                    it.isNotBlank()
+                }
+
+        val normalized =
+            clean
+                .lowercase(
+                    Locale.ROOT
+                )
+
+        val tokenCount =
+            Regex(
+                "[가-힣A-Za-z0-9]+"
+            )
+                .findAll(
+                    normalized
+                )
+                .count()
+
+        val meaningfulChars =
+            clean.count {
+                it.isLetterOrDigit()
+            }
+
+        val chromeKeywords =
+            listOf(
+                "북마크에 추가",
+                "안전한 연결",
+                "주소창",
+                "새로고침",
+                "뒤로가기",
+                "앞으로가기",
+                "상위 메뉴로 이동",
+                "더보기",
+                "공유",
+                "편집",
+                "삭제",
+                "텍스트 추출",
+                "카메라 닫기",
+                "셔터",
+                "플래시",
+                "카메라 전환",
+                "갤러리"
+            )
+
+        val chromeHits =
+            chromeKeywords.count {
+                normalized.contains(
+                    it
+                )
+            }
+
+        val containsUrl =
+            Regex(
+                """(?:https?://)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s]*)?"""
+            )
+                .containsMatchIn(
+                    normalized
+                )
+
+        /*
+         * 본문이 충분히 길면 UI chrome으로 보지 않는다.
+         * 짧은 텍스트가 브라우저/카메라 조작 라벨과 URL 위주일 때만 차단한다.
+         */
+        val shortContext =
+            lines.size <=
+                8 &&
+                meaningfulChars <=
+                140 &&
+                tokenCount <=
+                24
+
+        val likelyChrome =
+            shortContext &&
+                (
+                    chromeHits >=
+                        1 ||
+                        containsUrl
+                    )
+
+        Log.d(
+            TAG,
+            "READABLE_UI_CHROME_CHECK | likely=$likelyChrome | " +
+                "lines=${lines.size} | chars=$meaningfulChars | " +
+                "tokens=$tokenCount | chrome_hits=$chromeHits | url=$containsUrl"
+        )
+
+        return likelyChrome
+    }
+
     private fun chooseBestReadableText(
         nodeText: String,
         ocrText: String
@@ -3061,9 +3523,59 @@ class HaloAccessibilityService : AccessibilityService() {
         val node = nodeText.trim()
         val ocr = ocrText.trim()
 
-        if (node.isBlank() && ocr.isBlank()) return Pair("", false)
-        if (node.isBlank()) return Pair(ocr, true)
-        if (ocr.isBlank()) return Pair(node, false)
+        if (node.isBlank() && ocr.isBlank()) {
+            return Pair("", false)
+        }
+
+        if (node.isBlank()) {
+            return Pair(ocr, true)
+        }
+
+        val nodeLooksLikeUiChrome =
+            isLikelyUiChromeOnly(
+                node
+            )
+
+        /*
+         * 갤러리/브라우저/카메라의 UI 라벨만 잡힌 상황에서
+         * OCR 결과가 있으면 무조건 실제 이미지/화면 OCR을 우선한다.
+         */
+        if (
+            nodeLooksLikeUiChrome &&
+            ocr.isNotBlank()
+        ) {
+            Log.d(
+                TAG,
+                "Readable source = LOCAL OCR / reason=node_ui_chrome"
+            )
+
+            return Pair(
+                ocr,
+                true
+            )
+        }
+
+        /*
+         * OCR도 비었고 Node Tree도 UI 조작 라벨뿐이면
+         * '편집', '북마크', URL 등을 본문처럼 보여주지 않는다.
+         */
+        if (
+            ocr.isBlank()
+        ) {
+            return if (
+                nodeLooksLikeUiChrome
+            ) {
+                Pair(
+                    "",
+                    false
+                )
+            } else {
+                Pair(
+                    node,
+                    false
+                )
+            }
+        }
 
         val tokenRegex = Regex("[가-힣A-Za-z0-9]+")
 
@@ -3128,11 +3640,33 @@ class HaloAccessibilityService : AccessibilityService() {
             },
 
             onError = { message ->
-                if (nodeText.isNotBlank()) {
-                    Log.d(TAG, "OCR 실패 → Node Tree fallback")
-                    onReady(nodeText, false)
+                val nodeLooksLikeUiChrome =
+                    isLikelyUiChromeOnly(
+                        nodeText
+                    )
+
+                if (
+                    nodeText.isNotBlank() &&
+                    !nodeLooksLikeUiChrome
+                ) {
+                    Log.d(
+                        TAG,
+                        "OCR 실패 → 실제 본문으로 판단된 Node Tree fallback"
+                    )
+
+                    onReady(
+                        nodeText,
+                        false
+                    )
                 } else {
-                    onError(message)
+                    Log.d(
+                        TAG,
+                        "OCR 실패 + Node Tree UI chrome → 잘못된 fallback 차단"
+                    )
+
+                    onError(
+                        message
+                    )
                 }
             }
         )
@@ -3479,7 +4013,7 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
         val params = WindowManager.LayoutParams(
-            dp(340),
+            adaptiveOverlayWidth(340),
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
@@ -3885,8 +4419,8 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
         val params = WindowManager.LayoutParams(
-            dp(370),
-            dp(680),
+            adaptiveOverlayWidth(370),
+            adaptiveOverlayHeight(680),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
@@ -4182,7 +4716,7 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
         val params = WindowManager.LayoutParams(
-            dp(350),
+            adaptiveOverlayWidth(350),
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
@@ -4857,8 +5391,8 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
         val params = WindowManager.LayoutParams(
-            dp(370),
-            dp(650),
+            adaptiveOverlayWidth(370),
+            adaptiveOverlayHeight(650),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
@@ -5105,8 +5639,8 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
         val params = WindowManager.LayoutParams(
-            dp(360),
-            dp(430),
+            adaptiveOverlayWidth(360),
+            adaptiveOverlayHeight(430),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
@@ -5702,8 +6236,8 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
         val params = WindowManager.LayoutParams(
-            dp(370),
-            dp(650),
+            adaptiveOverlayWidth(370),
+            adaptiveOverlayHeight(650),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
@@ -5776,8 +6310,8 @@ class HaloAccessibilityService : AccessibilityService() {
         )
 
         val params = WindowManager.LayoutParams(
-            dp(350),
-            dp(360),
+            adaptiveOverlayWidth(350),
+            adaptiveOverlayHeight(360),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
@@ -5813,6 +6347,68 @@ class HaloAccessibilityService : AccessibilityService() {
             } catch (_: Exception) {}
         }
         resultPanel = null
+    }
+
+    // =========================================================
+    // 기기별 화면 크기에 맞춘 Overlay 크기
+    // =========================================================
+
+    private fun adaptiveOverlayWidth(
+        preferredDp: Int,
+        horizontalMarginDp: Int = 12
+    ): Int {
+        val screenWidth =
+            try {
+                windowManager
+                    .currentWindowMetrics
+                    .bounds
+                    .width()
+            } catch (_: Exception) {
+                dp(preferredDp)
+            }
+
+        val available =
+            (
+                screenWidth -
+                    dp(horizontalMarginDp * 2)
+                )
+                .coerceAtLeast(
+                    dp(220)
+                )
+
+        return minOf(
+            dp(preferredDp),
+            available
+        )
+    }
+
+    private fun adaptiveOverlayHeight(
+        preferredDp: Int,
+        verticalMarginDp: Int = 12
+    ): Int {
+        val screenHeight =
+            try {
+                windowManager
+                    .currentWindowMetrics
+                    .bounds
+                    .height()
+            } catch (_: Exception) {
+                dp(preferredDp)
+            }
+
+        val available =
+            (
+                screenHeight -
+                    dp(verticalMarginDp * 2)
+                )
+                .coerceAtLeast(
+                    dp(280)
+                )
+
+        return minOf(
+            dp(preferredDp),
+            available
+        )
     }
 
     private fun createRoundedBackground(

@@ -2,6 +2,7 @@ package com.example.halovision_app
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
@@ -32,6 +33,63 @@ class HaloCameraActivity : ComponentActivity() {
 
     companion object {
         private const val CAMERA_PERMISSION_REQUEST = 4102
+
+        @Volatile
+        private var activeInstance: HaloCameraActivity? = null
+
+        fun isActive(): Boolean {
+            return activeInstance != null
+        }
+
+        /**
+         * Accessibility Screenshot과 별개로 CameraX Preview 자체의 현재 프레임을 복사한다.
+         * XCover5처럼 기기별 Screenshot 합성 결과가 다른 경우의 OCR 안정성을 높인다.
+         */
+        fun captureCurrentPreviewBitmap(
+            onReady: (Bitmap?) -> Unit
+        ) {
+            val activity =
+                activeInstance
+
+            if (activity == null) {
+                onReady(null)
+                return
+            }
+
+            activity.runOnUiThread {
+                val previewBitmap =
+                    try {
+                        activity.previewView.bitmap
+                    } catch (_: Exception) {
+                        null
+                    }
+
+                val safeCopy =
+                    try {
+                        previewBitmap
+                            ?.copy(
+                                Bitmap.Config.ARGB_8888,
+                                false
+                            )
+                    } catch (_: Exception) {
+                        null
+                    }
+
+                if (
+                    previewBitmap != null &&
+                    previewBitmap !== safeCopy
+                ) {
+                    try {
+                        previewBitmap.recycle()
+                    } catch (_: Exception) {
+                    }
+                }
+
+                onReady(
+                    safeCopy
+                )
+            }
+        }
     }
 
     private lateinit var previewView: PreviewView
@@ -247,6 +305,25 @@ class HaloCameraActivity : ComponentActivity() {
 
             finish()
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+
+        activeInstance =
+            this
+    }
+
+    override fun onStop() {
+        if (
+            activeInstance ===
+            this
+        ) {
+            activeInstance =
+                null
+        }
+
+        super.onStop()
     }
 
     override fun onDestroy() {
