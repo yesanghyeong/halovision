@@ -3290,6 +3290,40 @@ class HaloAccessibilityService : AccessibilityService() {
     }
 
     // =========================================================
+    // HaloVision 전용 카메라 Preview 열기
+    // =========================================================
+
+    private fun openHaloCameraPreview() {
+        try {
+            val intent = Intent(
+                this,
+                HaloCameraActivity::class.java
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+
+            startActivity(intent)
+
+            Log.d(
+                TAG,
+                "HALO_CAMERA | preview_opened=true"
+            )
+        } catch (e: Exception) {
+            Log.e(
+                TAG,
+                "HALO_CAMERA | preview_opened=false",
+                e
+            )
+
+            showMessagePanel(
+                "카메라",
+                "카메라 화면을 열 수 없습니다."
+            )
+        }
+    }
+
+    // =========================================================
     // HALO 메뉴
     // =========================================================
 
@@ -3362,14 +3396,69 @@ class HaloAccessibilityService : AccessibilityService() {
         }
         panel.addView(questionButton)
 
-        val profileButton = createActionButton(
-            "⚙  설정"
-        )
+        val settingsCameraRow =
+            LinearLayout(this).apply {
+                orientation =
+                    LinearLayout.HORIZONTAL
+
+                gravity =
+                    Gravity.CENTER
+            }
+
+        val profileButton =
+            createActionButton(
+                "⚙  설정"
+            )
+
         profileButton.setOnClickListener {
             removeActionMenu()
             showVisionProfileTextSizeMenu()
         }
-        panel.addView(profileButton)
+
+        val cameraButton =
+            createActionButton(
+                "📷  카메라"
+            )
+
+        cameraButton.setOnClickListener {
+            removeActionMenu()
+            openHaloCameraPreview()
+        }
+
+        settingsCameraRow.addView(
+            profileButton,
+            LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            ).apply {
+                marginEnd =
+                    dp(5)
+            }
+        )
+
+        settingsCameraRow.addView(
+            cameraButton,
+            LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            ).apply {
+                marginStart =
+                    dp(5)
+            }
+        )
+
+        panel.addView(
+            settingsCameraRow,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin =
+                    dp(10)
+            }
+        )
 
         val closeButton = Button(this).apply {
             text = "닫기"

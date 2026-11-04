@@ -49,5 +49,15 @@ flutter {
 }
 
 dependencies {
+
     implementation("com.google.mlkit:text-recognition-korean:16.0.1")
+
+    // HaloVision 전용 카메라 Preview
+    implementation("androidx.camera:camera-core:1.6.2")
+    implementation("androidx.camera:camera-camera2:1.6.2")
+    implementation("androidx.camera:camera-lifecycle:1.6.2")
+    implementation("androidx.camera:camera-view:1.6.2")
+
+    // HaloCameraActivity : ComponentActivity
+    implementation("androidx.activity:activity-ktx:1.13.0")
 }
